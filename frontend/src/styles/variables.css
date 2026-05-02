@@ -1,0 +1,77 @@
+:root {
+  /* ===== Claude Code Inspired Palette ===== */
+  --bg-page: #FDFDF7;
+  --bg-surface: #FFFFFF;
+  --bg-hover: #F7F7F2;
+  --bg-muted: #F2F2ED;
+
+  --text-primary: #0E0E0E;
+  --text-secondary: #4A4A4A;
+  --text-tertiary: #8E8E8E;
+  --text-disabled: #B8B8B8;
+
+  --border-default: #E8E8E3;
+  --border-light: #F0F0EB;
+  --border-focus: #D4A27F;
+
+  --accent: #D4A27F;
+  --accent-hover: #C4926F;
+  --accent-light: #FDF5F0;
+  --accent-text: #8B5E3C;
+
+  --danger: #DC2626;
+  --danger-light: #FEF2F2;
+  --success: #16A34A;
+  --success-light: #F0FDF4;
+  --warning: #D97706;
+  --warning-light: #FFFBEB;
+  --info: #2563EB;
+  --info-light: #EFF6FF;
+
+  /* Role Colors (subtle versions) */
+  --role-sales: #2563EB;
+  --role-sales-light: #EFF6FF;
+  --role-consultant: #16A34A;
+  --role-consultant-light: #F0FDF4;
+  --role-admin: #D97706;
+  --role-admin-light: #FFFBEB;
+
+  /* Shadows */
+  --shadow-xs: 0 1px 2px rgba(0,0,0,0.03);
+  --shadow-sm: 0 1px 3px rgba(0,0,0,0.04), 0 1px 2px rgba(0,0,0,0.03);
+  --shadow-md: 0 4px 6px rgba(0,0,0,0.04), 0 2px 4px rgba(0,0,0,0.03);
+  --shadow-lg: 0 10px 15px rgba(0,0,0,0.05), 0 4px 6px rgba(0,0,0,0.03);
+
+  /* Typography */
+  --font-mono: 'SF Mono', 'Cascadia Code', 'Consolas', 'Monaco', monospace;
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+
+  --text-xs: 0.688rem;
+  --text-sm: 0.813rem;
+  --text-base: 0.875rem;
+  --text-md: 0.938rem;
+  --text-lg: 1.063rem;
+  --text-xl: 1.25rem;
+  --text-2xl: 1.5rem;
+
+  /* Spacing */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.25rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+  --space-10: 2.5rem;
+
+  /* Radius */
+  --radius-sm: 0.25rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.625rem;
+  --radius-xl: 0.75rem;
+
+  /* Components */
+  --header-height: 3.5rem;
+  --tag-font-size: 0.688rem;
+  --tag-padding: 0.125rem 0.5rem;
+}
