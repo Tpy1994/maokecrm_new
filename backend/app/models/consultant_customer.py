@@ -9,7 +9,7 @@ class ConsultantCustomer(SQLModel, table=True):
     __tablename__ = "consultant_customers"
 
     id: str = Field(default_factory=new_uuid, primary_key=True, max_length=36)
-    consultant_id: str = Field(foreign_key="users.id", max_length=36)
+    consultant_id: str | None = Field(default=None, foreign_key="users.id", max_length=36)
     customer_id: str = Field(foreign_key="customers.id", max_length=36)
     status: str = Field(default="pending", max_length=20)
     start_date: _dt.date | None = Field(default=None)

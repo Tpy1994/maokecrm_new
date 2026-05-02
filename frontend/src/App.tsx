@@ -10,6 +10,8 @@ import ProductsPage from './pages/admin/ProductsPage'
 import TagsPage from './pages/admin/TagsPage'
 import PersonnelPage from './pages/admin/PersonnelPage'
 import LinkAccountsPage from './pages/admin/LinkAccountsPage'
+import CustomerList from './pages/sales/CustomerList'
+import DataReview from './pages/sales/DataReview'
 
 export default function App() {
   return (
@@ -20,8 +22,8 @@ export default function App() {
 
           <Route element={<ProtectedRoute allowedRoles={['sales']} />}>
             <Route element={<SalesLayout />}>
-              <Route path="/sales/customers" element={<div>我的客户（开发中）</div>} />
-              <Route path="/sales/data-review" element={<div>数据复盘（开发中）</div>} />
+              <Route path="/sales/customers" element={<CustomerList />} />
+              <Route path="/sales/data-review" element={<DataReview />} />
             </Route>
           </Route>
 
