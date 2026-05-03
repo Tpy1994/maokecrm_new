@@ -1,4 +1,4 @@
-import { Outlet, useNavigate, useLocation } from 'react-router-dom'
+﻿import { Outlet, useNavigate, useLocation } from 'react-router-dom'
 import { LogoutOutlined, UserOutlined } from '@ant-design/icons'
 import { useAuthStore } from '../store/authStore'
 
@@ -34,7 +34,7 @@ export default function AdminLayout() {
               <path d="M6 16V7L11 12L16 7V16" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
             </svg>
             <span style={{ fontWeight: 700, fontSize: 14, color: '#0E0E0E', letterSpacing: '-0.01em' }}>
-              猫课管理后台
+              猫课·管理员
             </span>
           </div>
 
@@ -99,3 +99,5 @@ export default function AdminLayout() {
     </div>
   )
 }
+
+
