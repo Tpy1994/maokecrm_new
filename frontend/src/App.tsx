@@ -10,6 +10,9 @@ import ProductsPage from './pages/admin/ProductsPage'
 import TagsPage from './pages/admin/TagsPage'
 import PersonnelPage from './pages/admin/PersonnelPage'
 import LinkAccountsPage from './pages/admin/LinkAccountsPage'
+import AdminPoolPage from './pages/admin/AdminPoolPage'
+import AdminCustomersPage from './pages/admin/AdminCustomersPage'
+import AdminDataReviewPage from './pages/admin/AdminDataReviewPage'
 import CustomerList from './pages/sales/CustomerList'
 import DataReview from './pages/sales/DataReview'
 import ConsultantCustomersPage from './pages/consultant/ConsultantCustomersPage'
@@ -40,11 +43,11 @@ export default function App() {
 
           <Route element={<ProtectedRoute allowedRoles={['admin']} />}>
             <Route element={<AdminLayout />}>
-              <Route path="/admin/data-review" element={<div>数据复盘（开发中）</div>} />
+              <Route path="/admin/data-review" element={<AdminDataReviewPage />} />
               <Route path="/admin/personnel" element={<PersonnelPage />} />
               <Route path="/admin/link-accounts" element={<LinkAccountsPage />} />
-              <Route path="/admin/customers" element={<div>客户资产（开发中）</div>} />
-              <Route path="/admin/pool" element={<div>咨询池（开发中）</div>} />
+              <Route path="/admin/customers" element={<AdminCustomersPage />} />
+              <Route path="/admin/pool" element={<AdminPoolPage />} />
               <Route path="/admin/tags" element={<TagsPage />} />
               <Route path="/admin/products" element={<ProductsPage />} />
             </Route>
