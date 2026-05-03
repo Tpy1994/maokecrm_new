@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
+﻿import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import { ConfigProvider } from 'antd'
 import zhCN from 'antd/locale/zh_CN'
 import LoginPage from './pages/login/LoginPage'
@@ -12,6 +12,9 @@ import PersonnelPage from './pages/admin/PersonnelPage'
 import LinkAccountsPage from './pages/admin/LinkAccountsPage'
 import CustomerList from './pages/sales/CustomerList'
 import DataReview from './pages/sales/DataReview'
+import ConsultantCustomersPage from './pages/consultant/ConsultantCustomersPage'
+import ConsultantDataReviewPage from './pages/consultant/ConsultantDataReviewPage'
+import ConsultantPoolPage from './pages/consultant/ConsultantPoolPage'
 
 export default function App() {
   return (
@@ -29,9 +32,9 @@ export default function App() {
 
           <Route element={<ProtectedRoute allowedRoles={['consultant']} />}>
             <Route element={<ConsultantLayout />}>
-              <Route path="/consultant/customers" element={<div>我的咨询客户（开发中）</div>} />
-              <Route path="/consultant/data-review" element={<div>数据复盘（开发中）</div>} />
-              <Route path="/consultant/pool" element={<div>咨询池（开发中）</div>} />
+              <Route path="/consultant/customers" element={<ConsultantCustomersPage />} />
+              <Route path="/consultant/data-review" element={<ConsultantDataReviewPage />} />
+              <Route path="/consultant/pool" element={<ConsultantPoolPage />} />
             </Route>
           </Route>
 
