@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select, func
@@ -13,7 +15,40 @@ router = APIRouter(prefix="/products", tags=["products"])
 @router.get("/", response_model=list[ProductOut])
 async def list_products(db: AsyncSession = Depends(get_db), _=Depends(require_role("admin"))):
     result = await db.execute(select(Product).order_by(Product.status.desc(), Product.name))
-    return result.scalars().all()
+    products = result.scalars().all()
+
+    now = datetime.utcnow()
+    month_start = datetime(now.year, now.month, 1)
+    if now.month == 12:
+        month_end = datetime(now.year + 1, 1, 1)
+    else:
+        month_end = datetime(now.year, now.month + 1, 1)
+
+    monthly_rows = await db.execute(
+        select(Order.product_id, func.count(Order.id))
+        .where(
+            Order.created_at >= month_start,
+            Order.created_at < month_end,
+            Order.refunded_at.is_(None),
+        )
+        .group_by(Order.product_id)
+    )
+    monthly_map = {pid: cnt for pid, cnt in monthly_rows.all()}
+
+    out: list[ProductOut] = []
+    for p in products:
+        out.append(
+            ProductOut(
+                id=p.id,
+                name=p.name,
+                subtitle=p.subtitle,
+                price=p.price,
+                is_consultation=p.is_consultation,
+                status=p.status,
+                monthly_deal_count=int(monthly_map.get(p.id, 0)),
+            )
+        )
+    return out
 
 
 @router.get("/{product_id}", response_model=ProductOut)

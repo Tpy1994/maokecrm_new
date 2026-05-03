@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+﻿import { useEffect, useState } from 'react'
 import { Table, Modal, Form, Input, InputNumber, Switch, Popconfirm, message } from 'antd'
 import { PlusOutlined } from '@ant-design/icons'
 import { api } from '../../api/client'
@@ -10,6 +10,7 @@ interface Product {
   price: number
   is_consultation: boolean
   status: string
+  monthly_deal_count: number
 }
 
 const y2f = (cents: number) => {
@@ -27,7 +28,11 @@ export default function ProductsPage() {
 
   const fetchProducts = async () => {
     setLoading(true)
-    try { setProducts(await api.get<Product[]>('/products/')) } finally { setLoading(false) }
+    try {
+      setProducts(await api.get<Product[]>('/products/'))
+    } finally {
+      setLoading(false)
+    }
   }
 
   useEffect(() => { fetchProducts() }, [])
@@ -36,10 +41,16 @@ export default function ProductsPage() {
     const values = await form.validateFields()
     const payload = { ...values, price: Math.round(Number(values.price) * 100) }
     try {
-      editing ? await api.put(`/products/${editing.id}`, payload) : await api.post('/products/', payload)
+      if (editing) await api.put(`/products/${editing.id}`, payload)
+      else await api.post('/products/', payload)
       message.success(editing ? '产品已更新' : '产品已创建')
-      setModalOpen(false); setEditing(null); form.resetFields(); fetchProducts()
-    } catch { message.error('操作失败') }
+      setModalOpen(false)
+      setEditing(null)
+      form.resetFields()
+      fetchProducts()
+    } catch {
+      message.error('操作失败')
+    }
   }
 
   const toggleStatus = async (r: Product) => {
@@ -51,50 +62,63 @@ export default function ProductsPage() {
     {
       title: '产品名',
       dataIndex: 'name',
-      width: 240,
+      width: 280,
       render: (_: string, r: Product) => (
         <div>
-          <span style={{ fontWeight: 600, fontSize: 13, color: '#0E0E0E' }}>{r.name}</span>
-          {r.subtitle && <span style={{ fontSize: 11, color: '#8E8E8E', marginLeft: 8 }}>{r.subtitle}</span>}
+          <div style={{ fontWeight: 700, fontSize: 14, color: '#0E0E0E' }}>{r.name}</div>
+          {r.subtitle && <div style={{ fontSize: 12, color: '#8E8E8E', marginTop: 2 }}>{r.subtitle}</div>}
         </div>
       ),
     },
     {
       title: '价格',
       dataIndex: 'price',
-      width: 100,
-      render: (v: number) => <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 500 }}>¥{y2f(v)}</span>,
+      width: 120,
+      render: (v: number) => <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: 15 }}>¥{y2f(v)}</span>,
     },
     {
       title: '咨询类',
       dataIndex: 'is_consultation',
-      width: 80,
+      width: 90,
       render: (v: boolean) => (
-        <span style={{ fontSize: 12, padding: '1px 8px', borderRadius: 4, background: v ? '#F0FDF4' : '#F2F2ED', color: v ? '#16A34A' : '#8E8E8E' }}>
+        <span style={{ fontSize: 12, padding: '2px 9px', borderRadius: 6, background: v ? '#F6E9D2' : '#F2F2ED', color: v ? '#9A6516' : '#8E8E8E' }}>
           {v ? '是' : '否'}
         </span>
       ),
+    },
+    {
+      title: '本月成交',
+      dataIndex: 'monthly_deal_count',
+      width: 120,
+      render: (v: number) => <span style={{ fontWeight: 700, fontSize: 15 }}>{v > 0 ? `${v} 单` : '—'}</span>,
     },
     {
       title: '状态',
       dataIndex: 'status',
       width: 100,
       render: (v: string) => (
-        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-          <span className="status-dot" style={{ background: v === 'active' ? '#16A34A' : '#B8B8B8' }} />
-          <span style={{ fontSize: 12, color: '#4A4A4A' }}>{v === 'active' ? '在售' : '下架'}</span>
+        <span style={{ fontSize: 12, padding: '2px 10px', borderRadius: 6, background: v === 'active' ? '#DDF2E6' : '#F2F2ED', color: v === 'active' ? '#166534' : '#737373' }}>
+          {v === 'active' ? '在售' : '已下架'}
         </span>
       ),
     },
     {
       title: '操作',
       key: 'actions',
-      width: 120,
+      width: 140,
       render: (_: unknown, r: Product) => (
-        <div style={{ display: 'flex', gap: 14 }}>
-          <button className="action-link" style={{ color: '#4A4A4A' }} onClick={() => {
-            setEditing(r); form.setFieldsValue({ ...r, price: r.price / 100 }); setModalOpen(true)
-          }}>编辑</button>
+        <div style={{ display: 'flex', gap: 10 }}>
+          <button
+            className="action-link"
+            style={{ color: '#4A4A4A', border: '1px solid #D9D9D9', borderRadius: 10, padding: '4px 14px', background: '#fff' }}
+            onClick={() => {
+              setEditing(r)
+              form.setFieldsValue({ ...r, price: r.price / 100 })
+              setModalOpen(true)
+            }}
+          >
+            编辑
+          </button>
           <Popconfirm title={r.status === 'active' ? '下架该产品？' : '重新上架？'} onConfirm={() => toggleStatus(r)}>
             <button className="action-link" style={{ color: r.status === 'active' ? '#8E8E8E' : '#16A34A' }}>
               {r.status === 'active' ? '下架' : '上架'}
@@ -110,19 +134,22 @@ export default function ProductsPage() {
       <div className="page-header">
         <div>
           <h2>产品管理</h2>
-          <p className="page-subtitle">管理所有产品的信息、定价与咨询类属性</p>
+          <p className="page-subtitle">销售选择“成交产品”时的标准列表 · 咨询类产品成交后客户自动进入咨询池</p>
         </div>
         <button
-          onClick={() => { setEditing(null); form.resetFields(); form.setFieldsValue({ status: 'active', is_consultation: false, price: 0 }); setModalOpen(true) }}
-          style={{
-            display: 'inline-flex', alignItems: 'center', gap: 6, padding: '7px 16px', borderRadius: 8,
-            border: 'none', background: '#0E0E0E', color: '#fff', fontSize: 13, fontWeight: 600,
-            cursor: 'pointer', fontFamily: 'inherit', transition: 'background 0.15s',
+          onClick={() => {
+            setEditing(null)
+            form.resetFields()
+            form.setFieldsValue({ status: 'active', is_consultation: false, price: 0 })
+            setModalOpen(true)
           }}
-          onMouseEnter={(e) => (e.currentTarget as HTMLElement).style.background = '#4A4A4A'}
-          onMouseLeave={(e) => (e.currentTarget as HTMLElement).style.background = '#0E0E0E'}
+          style={{
+            display: 'inline-flex', alignItems: 'center', gap: 6, padding: '9px 18px', borderRadius: 12,
+            border: 'none', background: '#C7861D', color: '#fff', fontSize: 24, fontWeight: 700,
+            cursor: 'pointer', fontFamily: 'inherit', lineHeight: 1,
+          }}
         >
-          <PlusOutlined /> 新增产品
+          <PlusOutlined style={{ fontSize: 14 }} /> 新建产品
         </button>
       </div>
 
@@ -133,10 +160,10 @@ export default function ProductsPage() {
       <Modal title={editing ? '编辑产品' : '新增产品'} open={modalOpen} onOk={handleSubmit} onCancel={() => { setModalOpen(false); setEditing(null) }} destroyOnClose width={460}>
         <Form form={form} layout="vertical">
           <Form.Item name="name" label="产品名称" rules={[{ required: true }]}>
-            <Input placeholder="如: 电商管理咨询" />
+            <Input placeholder="如：电商管理咨询" />
           </Form.Item>
           <Form.Item name="subtitle" label="副标题">
-            <Input placeholder="如: 12个月陪跑服务" />
+            <Input placeholder="如：12个月陪跑服务" />
           </Form.Item>
           <div style={{ display: 'flex', gap: 16 }}>
             <Form.Item name="price" label="价格（元）" rules={[{ required: true }]} style={{ flex: 1 }}>

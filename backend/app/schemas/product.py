@@ -24,3 +24,4 @@ class ProductOut(BaseModel):
     price: int
     is_consultation: bool
     status: str
+    monthly_deal_count: int = 0
