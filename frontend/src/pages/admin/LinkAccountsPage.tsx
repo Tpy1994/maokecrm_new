@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+﻿import { useEffect, useState } from 'react'
 import { Table, Modal, Form, Input, Select, Popconfirm, message } from 'antd'
 import { PlusOutlined, SwapOutlined } from '@ant-design/icons'
 import { api } from '../../api/client'
@@ -10,6 +10,8 @@ interface LinkAccount {
   owner_name: string | null
   customer_count: number
   created_at: string | null
+  last_transfer_at: string | null
+  last_transfer_from_owner_name: string | null
 }
 
 interface UserOption { id: string; name: string }
@@ -17,7 +19,21 @@ interface UserOption { id: string; name: string }
 function timeAgo(d: string | null): string {
   if (!d) return '-'
   const days = Math.floor((Date.now() - new Date(d).getTime()) / 86400000)
-  return days === 0 ? '今天' : days === 1 ? '1 天前' : `${days} 天前`
+  if (days <= 0) return '今天'
+  return `${days} 天前`
+}
+
+function transferText(lastTransferAt: string | null, fromOwnerName: string | null): string {
+  if (!lastTransferAt || !fromOwnerName) return '未流转过'
+  const start = new Date(lastTransferAt)
+  if (Number.isNaN(start.getTime())) return '未流转过'
+
+  const now = new Date()
+  const startDay = new Date(start.getFullYear(), start.getMonth(), start.getDate()).getTime()
+  const nowDay = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()
+  const diffDays = Math.max(0, Math.floor((nowDay - startDay) / 86400000))
+  const when = diffDays === 0 ? '今天' : `${diffDays} 天前`
+  return `${when}从${fromOwnerName}销售流转`
 }
 
 export default function LinkAccountsPage() {
@@ -31,7 +47,11 @@ export default function LinkAccountsPage() {
 
   const fetchAccounts = async () => {
     setLoading(true)
-    try { setAccounts(await api.get<LinkAccount[]>('/link-accounts/')) } finally { setLoading(false) }
+    try {
+      setAccounts(await api.get<LinkAccount[]>('/link-accounts/'))
+    } finally {
+      setLoading(false)
+    }
   }
 
   useEffect(() => {
@@ -42,16 +62,26 @@ export default function LinkAccountsPage() {
   const handleCreate = async () => {
     try {
       await api.post('/link-accounts/', await form.validateFields())
-      message.success('账号已创建'); setModalOpen(false); form.resetFields(); fetchAccounts()
-    } catch { message.error('操作失败') }
+      message.success('账号已创建')
+      setModalOpen(false)
+      form.resetFields()
+      fetchAccounts()
+    } catch {
+      message.error('操作失败')
+    }
   }
 
   const handleTransfer = async () => {
     if (!transferModal) return
     try {
       await api.post(`/link-accounts/${transferModal.id}/transfer`, await transferForm.validateFields())
-      message.success('流转成功'); setTransferModal(null); transferForm.resetFields(); fetchAccounts()
-    } catch { message.error('流转失败') }
+      message.success('流转成功')
+      setTransferModal(null)
+      transferForm.resetFields()
+      fetchAccounts()
+    } catch {
+      message.error('流转失败')
+    }
   }
 
   const columns = [
@@ -81,6 +111,11 @@ export default function LinkAccountsPage() {
       render: (v: string | null) => <span style={{ fontSize: 12, color: '#8E8E8E' }}>{timeAgo(v)}</span>,
     },
     {
+      title: '流转记录',
+      width: 220,
+      render: (_: unknown, r: LinkAccount) => <span style={{ fontSize: 12, color: '#595959' }}>{transferText(r.last_transfer_at, r.last_transfer_from_owner_name)}</span>,
+    },
+    {
       title: '操作',
       key: 'actions',
       width: 130,
@@ -106,7 +141,7 @@ export default function LinkAccountsPage() {
     <div>
       <div className="page-header">
         <div>
-          <h2>账号管理</h2>
+          <h2>工作账号管理</h2>
           <p className="page-subtitle">管理微信等关联账号，支持一键流转到其他销售</p>
         </div>
         <button

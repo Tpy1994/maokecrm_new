@@ -18,3 +18,5 @@ class LinkAccountOut(BaseModel):
     owner_name: str | None = None
     customer_count: int | None = None
     created_at: str | None = None
+    last_transfer_at: str | None = None
+    last_transfer_from_owner_name: str | None = None

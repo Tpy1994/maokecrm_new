@@ -5,7 +5,7 @@ import { useAuthStore } from '../store/authStore'
 const menuItems = [
   { key: '/admin/data-review', label: '数据复盘' },
   { key: '/admin/personnel', label: '人员管理' },
-  { key: '/admin/link-accounts', label: '账号管理' },
+  { key: '/admin/link-accounts', label: '工作账号管理' },
   { key: '/admin/customers', label: '客户资产' },
   { key: '/admin/pool', label: '咨询池' },
   { key: '/admin/tags', label: '标签管理' },

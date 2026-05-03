@@ -27,6 +27,8 @@ async def list_accounts(db: AsyncSession = Depends(get_db), _=Depends(require_ro
             id=a.id, account_id=a.account_id, owner_id=a.owner_id,
             owner_name=owner_name, customer_count=c_count,
             created_at=a.created_at.isoformat() if a.created_at else None,
+            last_transfer_at=a.last_transfer_at.isoformat() if a.last_transfer_at else None,
+            last_transfer_from_owner_name=a.last_transfer_from_owner_name,
         ))
     return out
 
@@ -54,8 +56,11 @@ async def transfer_account(account_id: str, body: LinkAccountTransfer, db: Async
     if not target.scalar_one_or_none():
         raise HTTPException(status_code=404, detail="Target user not found")
 
-    old_owner_id = account.owner_id
+    old_owner_name_result = await db.execute(select(User.name).where(User.id == account.owner_id))
+    old_owner_name = old_owner_name_result.scalar_one_or_none()
     account.owner_id = body.target_user_id
+    account.last_transfer_at = datetime.utcnow()
+    account.last_transfer_from_owner_name = old_owner_name
 
     # Update all customers under this account to new owner
     await db.execute(
