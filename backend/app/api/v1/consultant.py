@@ -212,6 +212,7 @@ async def _build_consultants(customer_id: str, current_user_id: str, db: AsyncSe
             ConsultantCustomer.customer_id == customer_id,
             ConsultantCustomer.status == "active",
             ConsultantCustomer.consultant_id.is_not(None),
+            User.role == "consultant",
         )
         .order_by(User.name)
     )
