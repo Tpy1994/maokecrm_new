@@ -16,6 +16,7 @@ class ConsultantCustomer(SQLModel, table=True):
     end_date: _dt.date | None = Field(default=None)
     next_consultation: _dt.datetime | None = Field(default=None)
     note: str | None = Field(default=None)
+    consultation_count: int = Field(default=0)
 
     created_at: _dt.datetime = Field(default_factory=utcnow)
     updated_at: _dt.datetime = Field(default_factory=utcnow)

@@ -11,7 +11,11 @@ from app.db import init_db
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    await init_db()
+    try:
+        await init_db()
+    except Exception as exc:
+        # Do not block API startup on schema init failure.
+        print(f"[startup warning] init_db failed: {exc}")
     yield
 
 

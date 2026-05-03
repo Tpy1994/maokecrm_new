@@ -1,54 +1,80 @@
-﻿import { useEffect, useMemo, useState } from 'react'
-import { Button, Input, message, Table, Tag } from 'antd'
+﻿import { useEffect, useState } from 'react'
+import { Button, Input, Select, message, Table, Tag } from 'antd'
 import { api } from '../../api/client'
 
 interface Badge { consultant_id: string; consultant_name: string; is_me: boolean }
 interface CTag { id: string; name: string; color: string }
 interface CProduct { product_id: string; product_name: string; is_refunded: boolean }
 interface PoolItem {
+  pool_id: string
   customer_id: string
   customer_name: string
-  customer_info: string
+  phone: string
+  wechat_name: string | null
+  source_channel: string | null
+  deal_product: string | null
+  deal_amount: number | null
+  pool_entered_at: string
   tags: CTag[]
   products: CProduct[]
   sales_name: string | null
   consultants: Badge[]
-  pool_status: 'pending' | 'serving' | 'ended'
-  pool_age_label: string
-  pool_sort_time: string
+  service_status: 'unclaimed' | 'claimed_by_others' | 'joined_by_me'
+  consultant_count: number
+  can_claim: boolean
+  can_join: boolean
 }
 
 export default function ConsultantPoolPage() {
   const [rows, setRows] = useState<PoolItem[]>([])
   const [loading, setLoading] = useState(false)
   const [keyword, setKeyword] = useState('')
-  const [status, setStatus] = useState<'all' | 'pending' | 'serving' | 'ended'>('all')
+  const [filter, setFilter] = useState<'all' | 'unclaimed' | 'joined_by_me'>('all')
+  const totalCount = rows.length
+  const unclaimedCount = rows.filter((r) => r.service_status === 'unclaimed').length
+  const filteredRows = rows.filter((r) => {
+    if (filter === 'unclaimed') return r.service_status === 'unclaimed'
+    if (filter === 'joined_by_me') return r.service_status === 'joined_by_me'
+    return true
+  })
 
-  const fetchRows = async (k = keyword, s = status) => {
+  const fetchRows = async (k = keyword) => {
     setLoading(true)
     try {
       const q: string[] = []
       if (k) q.push(`keyword=${encodeURIComponent(k)}`)
-      if (s !== 'all') q.push(`status=${s}`)
       const query = q.length ? `?${q.join('&')}` : ''
       setRows(await api.get<PoolItem[]>(`/consultant/pool${query}`))
+    } catch (err) {
+      message.error(err instanceof Error ? err.message : '加载咨询池失败')
+      setRows([])
     } finally {
       setLoading(false)
     }
   }
 
-  useEffect(() => { fetchRows('', 'all') }, [])
-
-  const counts = useMemo(() => ({
-    pending: rows.filter(r => r.pool_status === 'pending').length,
-    serving: rows.filter(r => r.pool_status === 'serving').length,
-    ended: rows.filter(r => r.pool_status === 'ended').length,
-  }), [rows])
+  useEffect(() => { fetchRows('') }, [])
 
   const claim = async (customerId: string) => {
     await api.post(`/consultant/pool/${customerId}/claim`)
     message.success('认领成功')
     fetchRows()
+  }
+  const joinService = async (customerId: string) => {
+    await api.post(`/consultant/pool/${customerId}/join`)
+    message.success('加入服务成功')
+    fetchRows()
+  }
+
+  const formatTime = (value: string) => {
+    const d = new Date(value)
+    if (Number.isNaN(d.getTime())) return value
+    const yy = d.getFullYear()
+    const mm = `${d.getMonth() + 1}`.padStart(2, '0')
+    const dd = `${d.getDate()}`.padStart(2, '0')
+    const hh = `${d.getHours()}`.padStart(2, '0')
+    const mi = `${d.getMinutes()}`.padStart(2, '0')
+    return `${yy}-${mm}-${dd} ${hh}:${mi}`
   }
 
   const columns = [
@@ -59,7 +85,7 @@ export default function ConsultantPoolPage() {
       render: (_: unknown, r: PoolItem) => (
         <div>
           <div style={{ fontWeight: 700 }}>{r.customer_name}</div>
-          <div style={{ color: '#8c8c8c', fontSize: 12 }}>{r.customer_info || '-'}</div>
+          <div style={{ color: '#8c8c8c', fontSize: 12 }}>{r.phone || '-'}</div>
         </div>
       ),
     },
@@ -85,12 +111,20 @@ export default function ConsultantPoolPage() {
         return <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>{r.consultants.map(c => <Tag key={c.consultant_id} color="green">{c.is_me ? `周 · ${c.consultant_name}(我)` : c.consultant_name}</Tag>)}</div>
       },
     },
-    { title: '入池时间', dataIndex: 'pool_age_label', width: 100, render: (v: string, r: PoolItem) => <span style={{ color: r.pool_status === 'pending' ? '#a8071a' : '#262626', fontWeight: r.pool_status === 'pending' ? 700 : 500 }}>{v}</span> },
+    { title: '入池时间', dataIndex: 'pool_entered_at', width: 160, render: (v: string) => <span>{formatTime(v)}</span> },
     {
       title: '操作',
       key: 'actions',
-      width: 88,
-      render: (_: unknown, r: PoolItem) => r.pool_status === 'pending' ? <Button type="primary" style={{ background: '#52c41a', borderColor: '#52c41a' }} onClick={() => claim(r.customer_id)}>认领</Button> : <span style={{ color: '#bfbfbf' }}>—</span>,
+      width: 110,
+      render: (_: unknown, r: PoolItem) => {
+        if (r.can_claim) {
+          return <Button type="primary" style={{ background: '#52c41a', borderColor: '#52c41a' }} onClick={() => claim(r.customer_id)}>认领</Button>
+        }
+        if (r.can_join) {
+          return <Button onClick={() => joinService(r.customer_id)}>加入服务</Button>
+        }
+        return <span style={{ color: '#bfbfbf' }}>服务中</span>
+      },
     },
   ]
 
@@ -99,51 +133,36 @@ export default function ConsultantPoolPage() {
       <div className="page-header">
         <div>
           <h2>咨询池</h2>
-          <p className="page-subtitle">所有咨询客户的全局总览</p>
+          <p className="page-subtitle">
+            所有咨询客户的全局总览（共 {totalCount} 个用户，待认领 {unclaimedCount} 个）
+          </p>
         </div>
-        <Input.Search placeholder="搜索客户" style={{ width: 280 }} value={keyword} onChange={(e) => setKeyword(e.target.value)} onSearch={(v) => fetchRows(v, status)} />
-      </div>
-
-      <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
-        {[
-          { label: `待认领 ${counts.pending}`, value: 'pending' },
-          { label: `服务中 ${counts.serving}`, value: 'serving' },
-          { label: `已结束 ${counts.ended}`, value: 'ended' },
-          { label: '全部', value: 'all' },
-        ].map((item) => {
-          const active = status === item.value
-          return (
-            <button
-              key={item.value}
-              onClick={() => { const nv = item.value as 'all' | 'pending' | 'serving' | 'ended'; setStatus(nv); fetchRows(keyword, nv) }}
-              style={{
-                border: '1px solid #d9d9d9',
-                background: active ? '#d1fae5' : '#fff',
-                color: '#262626',
-                borderRadius: 9,
-                padding: '7px 14px',
-                fontSize: 13,
-                fontWeight: active ? 600 : 500,
-                cursor: 'pointer',
-                fontFamily: 'inherit',
-              }}
-            >
-              {item.label}
-            </button>
-          )
-        })}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+          <Select
+            style={{ width: 140 }}
+            value={filter}
+            onChange={(v) => setFilter(v)}
+            options={[
+              { value: 'all', label: '全部' },
+              { value: 'unclaimed', label: '待认领' },
+              { value: 'joined_by_me', label: '我服务中' },
+            ]}
+          />
+          <Input.Search placeholder="搜索客户" style={{ width: 280 }} value={keyword} onChange={(e) => setKeyword(e.target.value)} onSearch={(v) => fetchRows(v)} />
+        </div>
       </div>
 
       <div style={{ background: '#fff', border: '1px solid #e8e8e3', borderRadius: 10, overflow: 'hidden' }}>
         <Table
           rowKey="customer_id"
-          dataSource={rows}
+          dataSource={filteredRows}
           columns={columns}
           loading={loading}
           pagination={false}
-          onRow={(record) => ({ style: { background: record.pool_status === 'pending' ? '#fff1f0' : '#fff' } })}
+          onRow={(record) => ({ style: { background: record.service_status === 'unclaimed' ? '#fff1f0' : '#fff' } })}
         />
       </div>
     </div>
   )
 }
+

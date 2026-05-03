@@ -1,4 +1,4 @@
-﻿from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
@@ -56,16 +56,23 @@ class ConsultantCustomerOut(BaseModel):
 
 
 class PoolItemOut(BaseModel):
+    pool_id: str
     customer_id: str
     customer_name: str
-    customer_info: str
+    phone: str
+    wechat_name: str | None
+    source_channel: str | None
+    deal_product: str | None
+    deal_amount: int | None
+    pool_entered_at: str
     tags: list[TagOut]
     products: list[ProductOut]
     sales_name: str | None
     consultants: list[ConsultantBadgeOut]
-    pool_status: str
-    pool_age_label: str
-    pool_sort_time: str
+    service_status: str
+    consultant_count: int
+    can_claim: bool
+    can_join: bool
 
 
 class LogItemOut(BaseModel):
@@ -86,6 +93,7 @@ class UpdateConsultantCustomerIn(BaseModel):
     start_date: str | None = None
     end_date: str | None = None
     next_consultation: str | None = None
+    consultation_count: int | None = None
 
 
 class UpsertLogIn(BaseModel):
@@ -115,7 +123,7 @@ def _customer_info(customer: Customer) -> str:
     industry = customer.industry or ""
     region = customer.region or ""
     if industry and region:
-        return f"{industry}·{region}"
+        return f"{industry}-{region}"
     return industry or region
 
 
@@ -150,6 +158,18 @@ def _period_status(start: date | None, end: date | None) -> tuple[str, str]:
     if remain <= 30:
         return "临近到期", "near_expiry"
     return "进行中", "active"
+
+
+def _parse_iso_datetime(value: str) -> datetime:
+    raw = value.strip()
+    # Python fromisoformat does not accept trailing "Z" on some runtimes.
+    if raw.endswith("Z"):
+        raw = raw[:-1] + "+00:00"
+    parsed = datetime.fromisoformat(raw)
+    # Persist as naive UTC for consistency with existing datetime.utcnow() usage.
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+    return parsed
 
 
 async def _build_tags(customer_id: str, db: AsyncSession) -> list[TagOut]:
@@ -259,13 +279,6 @@ async def consultant_customers(
                 continue
 
         products, refunded = await _build_products(c.id, db)
-        logs_count_r = await db.execute(
-            select(func.count(ConsultationLog.id)).where(
-                ConsultationLog.customer_id == c.id,
-                ConsultationLog.consultant_id == current_user.id,
-            )
-        )
-        cnt = logs_count_r.scalar() or 0
         collaborators = await _build_consultants(c.id, current_user.id, db)
 
         status_key, status_label, row_tone = _dt_status(rel.next_consultation)
@@ -291,7 +304,7 @@ async def consultant_customers(
                 next_consultation_label=status_label,
                 period_label=period_label,
                 period_status=period_key,
-                consultation_count=cnt,
+                consultation_count=rel.consultation_count,
                 is_refunded_customer=refunded,
                 row_tone=row_tone if not refunded else "muted",
                 collaborators=collaborators,
@@ -377,7 +390,14 @@ async def update_consultant_customer(
     if body.end_date is not None:
         rel.end_date = date.fromisoformat(body.end_date)
     if body.next_consultation is not None:
-        rel.next_consultation = datetime.fromisoformat(body.next_consultation)
+        try:
+            rel.next_consultation = _parse_iso_datetime(body.next_consultation)
+        except Exception:
+            raise HTTPException(400, "下次咨询时间格式错误")
+    if body.consultation_count is not None:
+        if body.consultation_count < 0 or body.consultation_count > 20:
+            raise HTTPException(400, "咨询次数必须在0到20之间")
+        rel.consultation_count = body.consultation_count
 
     rel.updated_at = datetime.utcnow()
     await db.commit()
@@ -410,7 +430,6 @@ async def return_to_pool(
 @router.get("/pool", response_model=list[PoolItemOut])
 async def consultant_pool(
     keyword: str | None = Query(None),
-    status: str | None = Query(None),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_role("consultant")),
 ):
@@ -433,51 +452,74 @@ async def consultant_pool(
             .order_by(ConsultantCustomer.created_at.asc())
         )
         pending_rel = pending_r.scalars().first()
-
-        pool_status = "pending" if len(consultants) == 0 else "serving"
-        if status in {"pending", "serving", "ended"} and pool_status != status:
-            continue
-
         if pending_rel:
-            age_days = (datetime.utcnow().date() - pending_rel.created_at.date()).days
-            age_label = f"{age_days}天前"
-            sort_time = pending_rel.created_at.isoformat()
-        elif consultants:
+            pool_rel = pending_rel
+        else:
             any_rel_r = await db.execute(
                 select(ConsultantCustomer)
                 .where(
                     ConsultantCustomer.customer_id == c.id,
-                    ConsultantCustomer.status == "active",
+                    ConsultantCustomer.status.in_(["active", "ended"]),
                 )
                 .order_by(ConsultantCustomer.created_at.asc())
             )
-            first_rel = any_rel_r.scalars().first()
-            sort_time = first_rel.created_at.isoformat() if first_rel else c.created_at.isoformat()
-            age_label = f"{(first_rel.created_at if first_rel else c.created_at).strftime('%m/%d')}入池"
+            pool_rel = any_rel_r.scalars().first()
+
+        pool_entered_at = (pool_rel.created_at if pool_rel else c.created_at).isoformat()
+        pool_id = pool_rel.id if pool_rel else ""
+
+        consultant_count = len(consultants)
+        my_joined = any(it.is_me for it in consultants)
+        if consultant_count == 0:
+            service_status = "unclaimed"
+            can_claim = True
+            can_join = False
+        elif my_joined:
+            service_status = "joined_by_me"
+            can_claim = False
+            can_join = False
         else:
-            sort_time = c.created_at.isoformat()
-            age_label = "--"
+            service_status = "claimed_by_others"
+            can_claim = False
+            can_join = True
 
         sales_name = None
         sales_r = await db.execute(select(User.name).where(User.id == c.entry_user_id))
         sales_name = sales_r.scalar_one_or_none()
+        link_r = await db.execute(select(LinkAccount.account_id).where(LinkAccount.id == c.link_account_id))
+        wechat_name = link_r.scalar_one_or_none()
+        source_channel = c.industry or c.region or None
+        deal_product = products[0].product_name if products else None
+        deal_amount = None
 
         out.append(
             PoolItemOut(
+                pool_id=pool_id,
                 customer_id=c.id,
                 customer_name=c.name,
-                customer_info=_customer_info(c),
+                phone=c.phone,
+                wechat_name=wechat_name,
+                source_channel=source_channel,
+                deal_product=deal_product,
+                deal_amount=deal_amount,
+                pool_entered_at=pool_entered_at,
                 tags=tags,
                 products=products,
                 sales_name=sales_name,
                 consultants=consultants,
-                pool_status=pool_status,
-                pool_age_label=age_label,
-                pool_sort_time=sort_time,
+                service_status=service_status,
+                consultant_count=consultant_count,
+                can_claim=can_claim,
+                can_join=can_join,
             )
         )
 
-    out.sort(key=lambda i: (0 if i.pool_status == "pending" else 1, i.pool_sort_time), reverse=True)
+    out.sort(
+        key=lambda i: (
+            0 if i.service_status == "unclaimed" else 1,
+            i.pool_entered_at,
+        )
+    )
     return out
 
 
@@ -519,6 +561,40 @@ async def claim_from_pool(
     )
     for p in pendings.scalars().all():
         await db.delete(p)
+
+    await db.commit()
+    return {"message": "ok"}
+
+
+@router.post("/pool/{customer_id}/join")
+async def join_pool_service(
+    customer_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role("consultant")),
+):
+    exists = await db.execute(
+        select(ConsultantCustomer).where(
+            ConsultantCustomer.customer_id == customer_id,
+            ConsultantCustomer.consultant_id == current_user.id,
+            ConsultantCustomer.status == "active",
+        )
+    )
+    if exists.scalar_one_or_none() is not None:
+        return {"message": "already_active"}
+
+    ended = await db.execute(
+        select(ConsultantCustomer).where(
+            ConsultantCustomer.customer_id == customer_id,
+            ConsultantCustomer.consultant_id == current_user.id,
+            ConsultantCustomer.status == "ended",
+        )
+    )
+    ended_rel = ended.scalar_one_or_none()
+    if ended_rel:
+        ended_rel.status = "active"
+        ended_rel.updated_at = datetime.utcnow()
+    else:
+        db.add(ConsultantCustomer(customer_id=customer_id, consultant_id=current_user.id, status="active"))
 
     await db.commit()
     return {"message": "ok"}
