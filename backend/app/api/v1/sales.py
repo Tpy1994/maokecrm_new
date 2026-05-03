@@ -11,6 +11,7 @@ from app.models.link_account import LinkAccount
 from app.models.product import Product
 from app.models.order import Order, CustomerProduct
 from app.models.consultant_customer import ConsultantCustomer
+from app.models.customer_course_enrollment import CustomerCourseEnrollment
 from app.models.tag import Tag, CustomerTag, TagCategory
 
 router = APIRouter(prefix="/sales", tags=["sales"])
@@ -36,6 +37,14 @@ class CustomerProductOut(BaseModel):
     is_refunded: bool
     order_id: str | None = None
 
+
+class CourseEnrollmentOut(BaseModel):
+    enrollment_id: str
+    product_id: str
+    product_name: str
+    amount_paid: int
+    status: str
+
 class CustomerOut(BaseModel):
     id: str
     name: str
@@ -49,6 +58,13 @@ class CustomerOut(BaseModel):
     note: str | None
     next_follow_up: str | None
     follow_up_overdue: bool
+    next_follow_up_status: str
+    in_consultation_pool: bool
+    consultation_count: int | None
+    courses: list[CourseEnrollmentOut]
+    total_spent: int
+    gifted_tuition_amount: int
+    tuition_balance: int
 
 class CustomerCreate(BaseModel):
     name: str = Field(max_length=50)
@@ -64,6 +80,8 @@ class CustomerUpdate(BaseModel):
     region: str | None = None
     note: str | None = None
     next_follow_up: str | None = None
+    consultation_count: int | None = None
+    gifted_tuition_amount: int | None = None
 
 class PurchaseRequest(BaseModel):
     product_id: str
@@ -71,6 +89,26 @@ class PurchaseRequest(BaseModel):
 
 class TagRequest(BaseModel):
     tag_id: str
+
+
+class LinkAccountCreateIn(BaseModel):
+    account_id: str = Field(min_length=2, max_length=200)
+
+
+class SalesCourseStatusUpdateIn(BaseModel):
+    status: str
+
+
+class SalesCreateCourseIn(BaseModel):
+    product_id: str
+
+
+SALES_COURSE_STATUSES = {
+    "purchased_not_started",
+    "sales_marked_completed",
+    "purchased_not_started_refunded",
+    "sales_marked_completed_refunded",
+}
 
 
 # ===================== Helpers =====================
@@ -125,22 +163,64 @@ async def _build_customer_out(customer: Customer, db: AsyncSession) -> CustomerO
         for cp, p in cp_rows.all()
     ]
 
-    # sales note / next_follow_up from consultant_customers (all "active" records for this customer)
-    cc_result = await db.execute(
+    # course enrollments
+    enrollment_rows = await db.execute(
+        select(CustomerCourseEnrollment, Product)
+        .join(Product, Product.id == CustomerCourseEnrollment.product_id)
+        .where(CustomerCourseEnrollment.customer_id == customer.id)
+        .order_by(CustomerCourseEnrollment.created_at.desc())
+    )
+    courses = [
+        CourseEnrollmentOut(
+            enrollment_id=e.id,
+            product_id=e.product_id,
+            product_name=p.name,
+            amount_paid=e.amount_paid,
+            status=e.status,
+        )
+        for e, p in enrollment_rows.all()
+    ]
+
+    total_spent_r = await db.execute(
+        select(func.coalesce(func.sum(Order.amount), 0)).where(Order.customer_id == customer.id)
+    )
+    total_spent = int(total_spent_r.scalar() or 0)
+    gifted = customer.gifted_tuition_amount or 0
+    tuition_balance = max(0, gifted - total_spent)
+
+    # sales note / next follow-up stored on customers
+    note = customer.sales_note
+    next_fu = customer.next_follow_up.isoformat() if customer.next_follow_up else None
+    overdue = False
+    status = "unset"
+    if customer.next_follow_up:
+        now = datetime.utcnow()
+        target = customer.next_follow_up.replace(tzinfo=None)
+        overdue = target < now
+        if target.date() < now.date():
+            status = "overdue"
+        elif target.date() == now.date():
+            status = "today"
+        else:
+            status = "future"
+
+    # consultation pool / count
+    pending_r = await db.execute(
         select(ConsultantCustomer).where(
             ConsultantCustomer.customer_id == customer.id,
-            ConsultantCustomer.status == "active",
+            ConsultantCustomer.status == "pending",
         )
     )
-    cc = cc_result.scalars().first()
-    note = None
-    next_fu = None
-    overdue = False
-    if cc:
-        note = cc.note
-        if cc.next_consultation:
-            next_fu = cc.next_consultation.isoformat()
-            overdue = cc.next_consultation.replace(tzinfo=None) < datetime.utcnow()
+    in_pool = pending_r.scalar_one_or_none() is not None
+
+    cc_count_r = await db.execute(
+        select(ConsultantCustomer).where(
+            ConsultantCustomer.customer_id == customer.id,
+            ConsultantCustomer.status.in_(["active", "ended"]),
+        ).order_by(ConsultantCustomer.updated_at.desc())
+    )
+    cc_latest = cc_count_r.scalars().first()
+    consultation_count = cc_latest.consultation_count if cc_latest else None
 
     return CustomerOut(
         id=customer.id, name=customer.name, phone=customer.phone,
@@ -148,6 +228,13 @@ async def _build_customer_out(customer: Customer, db: AsyncSession) -> CustomerO
         link_account_id=customer.link_account_id, link_account_name=la_name,
         tags=tags, products=products,
         note=note, next_follow_up=next_fu, follow_up_overdue=overdue,
+        next_follow_up_status=status,
+        in_consultation_pool=in_pool,
+        consultation_count=consultation_count,
+        courses=courses,
+        total_spent=total_spent,
+        gifted_tuition_amount=gifted,
+        tuition_balance=tuition_balance,
     )
 
 
@@ -186,11 +273,34 @@ async def list_link_accounts(
     return out
 
 
+@router.post("/link-accounts", status_code=201)
+async def create_link_account_by_sales(
+    body: LinkAccountCreateIn,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role("sales")),
+):
+    account_id = body.account_id.strip()
+    if not account_id:
+        raise HTTPException(400, "account_id is required")
+
+    exists = await db.execute(select(LinkAccount).where(LinkAccount.account_id == account_id))
+    if exists.scalar_one_or_none() is not None:
+        raise HTTPException(400, "该微信号已存在")
+
+    db.add(LinkAccount(account_id=account_id, owner_id=current_user.id))
+    await db.commit()
+    return {"message": "新增成功"}
+
+
 # ===================== Customers =====================
 
 @router.get("/customers", response_model=list[CustomerOut])
 async def list_customers(
     link_account_id: str | None = Query(None),
+    keyword: str | None = Query(None),
+    in_pool: bool | None = Query(None),
+    dealed: bool | None = Query(None),
+    overdue: bool | None = Query(None),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_role("sales")),
 ):
@@ -206,7 +316,24 @@ async def list_customers(
     result = await db.execute(query)
     out = []
     for c in result.scalars().all():
-        out.append(await _build_customer_out(c, db))
+        item = await _build_customer_out(c, db)
+        if keyword:
+            k = keyword.strip().lower()
+            if k:
+                in_name = k in item.name.lower()
+                in_phone = k in item.phone.lower()
+                in_tags = any(k in t.name.lower() for t in item.tags)
+                if not (in_name or in_phone or in_tags):
+                    continue
+        if in_pool is not None and item.in_consultation_pool != in_pool:
+            continue
+        if overdue is not None and item.follow_up_overdue != overdue:
+            continue
+        if dealed is not None:
+            has_dealed = any(not p.is_refunded for p in item.products)
+            if has_dealed != dealed:
+                continue
+        out.append(item)
     return out
 
 
@@ -233,12 +360,7 @@ async def create_customer(
     db.add(customer)
     await db.flush()
 
-    cc = ConsultantCustomer(
-        consultant_id=current_user.id,
-        customer_id=customer.id,
-        status="active",
-    )
-    db.add(cc)
+    # Sales-side follow-up fields remain on customers.
     await db.commit()
     await db.refresh(customer)
     return await _build_customer_out(customer, db)
@@ -258,27 +380,26 @@ async def update_customer(
     if body.industry is not None: customer.industry = body.industry
     if body.region is not None: customer.region = body.region
 
-    if body.note is not None or body.next_follow_up is not None:
+    if body.note is not None:
+        customer.sales_note = body.note
+    if body.next_follow_up is not None:
+        customer.next_follow_up = datetime.fromisoformat(body.next_follow_up) if body.next_follow_up else None
+    if body.consultation_count is not None:
+        if body.consultation_count < 0 or body.consultation_count > 20:
+            raise HTTPException(400, "consultation_count must be between 0 and 20")
         cc_result = await db.execute(
             select(ConsultantCustomer).where(
                 ConsultantCustomer.customer_id == customer_id,
-                ConsultantCustomer.consultant_id == current_user.id,
-                ConsultantCustomer.status == "active",
-            )
+                ConsultantCustomer.status.in_(["active", "ended"]),
+            ).order_by(ConsultantCustomer.updated_at.desc())
         )
-        cc = cc_result.scalar_one_or_none()
-        if cc is None:
-            cc = ConsultantCustomer(
-                consultant_id=current_user.id,
-                customer_id=customer_id,
-                status="active",
-            )
-            db.add(cc)
-            await db.flush()
-        if body.note is not None:
-            cc.note = body.note
-        if body.next_follow_up is not None:
-            cc.next_consultation = datetime.fromisoformat(body.next_follow_up)
+        cc = cc_result.scalars().first()
+        if cc is not None:
+            cc.consultation_count = body.consultation_count
+    if body.gifted_tuition_amount is not None:
+        if body.gifted_tuition_amount < 0:
+            raise HTTPException(400, "gifted_tuition_amount must be >= 0")
+        customer.gifted_tuition_amount = body.gifted_tuition_amount
 
     await db.commit()
     await db.refresh(customer)
@@ -363,6 +484,19 @@ async def purchase_product(
             order_id=order.id, is_refunded=False,
         ))
 
+    db.add(
+        CustomerCourseEnrollment(
+            customer_id=customer_id,
+            order_id=order.id,
+            product_id=body.product_id,
+            amount_paid=body.amount,
+            status="purchased_not_started",
+            status_updated_by=current_user.id,
+            status_updated_role="sales",
+            status_updated_at=datetime.utcnow(),
+        )
+    )
+
     if product.is_consultation:
         exist = await db.execute(
             select(ConsultantCustomer).where(
@@ -409,6 +543,27 @@ async def refund_order(
     if cp:
         cp.is_refunded = True
 
+    enroll_r = await db.execute(
+        select(CustomerCourseEnrollment)
+        .where(
+            CustomerCourseEnrollment.customer_id == order.customer_id,
+            CustomerCourseEnrollment.order_id == order.id,
+        )
+        .order_by(CustomerCourseEnrollment.created_at.desc())
+    )
+    enrollment = enroll_r.scalars().first()
+    if enrollment is not None:
+        if enrollment.status == "sales_marked_completed":
+            enrollment.status = "sales_marked_completed_refunded"
+        elif enrollment.status == "admin_marked_completed":
+            enrollment.status = "admin_marked_completed_refunded"
+        else:
+            enrollment.status = "purchased_not_started_refunded"
+        enrollment.status_updated_by = current_user.id
+        enrollment.status_updated_role = "sales"
+        enrollment.status_updated_at = now
+        enrollment.updated_at = now
+
     await db.commit()
 
     # Time period impact
@@ -424,6 +579,86 @@ async def refund_order(
         impact = "双月外退款 — 不影响任何数据"
 
     return {"amount": order.amount, "refunded_at": now.isoformat(), "impact": impact}
+
+
+@router.put("/customers/{customer_id}/courses/{enrollment_id}/status")
+async def update_sales_course_status(
+    customer_id: str,
+    enrollment_id: str,
+    body: SalesCourseStatusUpdateIn,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role("sales")),
+):
+    if body.status not in SALES_COURSE_STATUSES:
+        raise HTTPException(400, "销售仅可设置前4种状态")
+
+    await _get_my_customer(customer_id, current_user, db)
+
+    row = await db.execute(
+        select(CustomerCourseEnrollment).where(
+            CustomerCourseEnrollment.id == enrollment_id,
+            CustomerCourseEnrollment.customer_id == customer_id,
+        )
+    )
+    enrollment = row.scalar_one_or_none()
+    if enrollment is None:
+        raise HTTPException(404, "课程记录不存在")
+
+    enrollment.status = body.status
+    enrollment.status_updated_by = current_user.id
+    enrollment.status_updated_role = "sales"
+    enrollment.status_updated_at = datetime.utcnow()
+    enrollment.updated_at = datetime.utcnow()
+    await db.commit()
+    return {"message": "ok"}
+
+
+@router.post("/customers/{customer_id}/courses", status_code=201)
+async def create_sales_course(
+    customer_id: str,
+    body: SalesCreateCourseIn,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role("sales")),
+):
+    await _get_my_customer(customer_id, current_user, db)
+
+    product_r = await db.execute(select(Product).where(Product.id == body.product_id))
+    product = product_r.scalar_one_or_none()
+    if product is None:
+        raise HTTPException(404, "产品不存在")
+
+    order = Order(
+        customer_id=customer_id,
+        product_id=body.product_id,
+        sales_user_id=current_user.id,
+        amount=product.price,
+    )
+    db.add(order)
+    await db.flush()
+
+    db.add(
+        CustomerProduct(
+            customer_id=customer_id,
+            product_id=body.product_id,
+            order_id=order.id,
+            is_refunded=False,
+        )
+    )
+
+    db.add(
+        CustomerCourseEnrollment(
+            customer_id=customer_id,
+            order_id=order.id,
+            product_id=body.product_id,
+            amount_paid=product.price,
+            status="purchased_not_started",
+            status_updated_by=current_user.id,
+            status_updated_role="sales",
+            status_updated_at=datetime.utcnow(),
+        )
+    )
+    await db.commit()
+    return {"message": "ok"}
 
 
 # ===================== Products (sales view) =====================

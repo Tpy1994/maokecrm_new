@@ -12,12 +12,12 @@
 
   --border-default: #E8E8E3;
   --border-light: #F0F0EB;
-  --border-focus: #D4A27F;
+  --border-focus: #3B82F6;
 
-  --accent: #D4A27F;
-  --accent-hover: #C4926F;
-  --accent-light: #FDF5F0;
-  --accent-text: #8B5E3C;
+  --accent: #3B82F6;
+  --accent-hover: #2563EB;
+  --accent-light: #EAF2FF;
+  --accent-text: #1D4ED8;
 
   --danger: #DC2626;
   --danger-light: #FEF2F2;
@@ -29,8 +29,8 @@
   --info-light: #EFF6FF;
 
   /* Role Colors (subtle versions) */
-  --role-sales: #2563EB;
-  --role-sales-light: #EFF6FF;
+  --role-sales: #3B82F6;
+  --role-sales-light: #EAF2FF;
   --role-consultant: #16A34A;
   --role-consultant-light: #F0FDF4;
   --role-admin: #D97706;

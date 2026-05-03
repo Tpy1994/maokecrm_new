@@ -6,6 +6,7 @@ from app.models.order import Order, CustomerProduct
 from app.models.consultant_customer import ConsultantCustomer
 from app.models.consultation_log import ConsultationLog
 from app.models.tag import TagCategory, Tag, CustomerTag
+from app.models.customer_course_enrollment import CustomerCourseEnrollment
 
 __all__ = [
     "User",
@@ -16,6 +17,7 @@ __all__ = [
     "CustomerProduct",
     "ConsultantCustomer",
     "ConsultationLog",
+    "CustomerCourseEnrollment",
     "TagCategory",
     "Tag",
     "CustomerTag",

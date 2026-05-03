@@ -31,7 +31,7 @@ html, body, #root {
   text-transform: uppercase;
   letter-spacing: 0.025em;
   background: var(--bg-muted);
-  padding: 0.625rem 1rem;
+  padding: 0.5rem 0.75rem;
   border-bottom: 1px solid var(--border-default);
 }
 
@@ -40,7 +40,7 @@ html, body, #root {
 }
 
 .ant-table-tbody > tr > td {
-  padding: 0.75rem 1rem;
+  padding: 0.5rem 0.75rem;
   font-size: var(--text-sm);
   border-bottom: 1px solid var(--border-light);
   color: var(--text-primary);
@@ -86,14 +86,14 @@ html, body, #root {
 }
 
 .ant-btn-primary {
-  background: var(--text-primary);
-  border-color: var(--text-primary);
+  background: var(--accent);
+  border-color: var(--accent);
   color: #fff;
 }
 
 .ant-btn-primary:hover {
-  background: var(--text-secondary) !important;
-  border-color: var(--text-secondary) !important;
+  background: var(--accent-hover) !important;
+  border-color: var(--accent-hover) !important;
 }
 
 .ant-btn-sm {
@@ -122,7 +122,7 @@ html, body, #root {
 
 .ant-input:focus, .ant-input-focused {
   border-color: var(--border-focus);
-  box-shadow: 0 0 0 2px rgba(212, 162, 127, 0.15);
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.16);
 }
 
 .ant-input {
@@ -208,7 +208,25 @@ html, body, #root {
 }
 
 .ant-switch-checked {
-  background: var(--text-primary);
+  background: var(--accent);
+}
+
+/* Selected controls (tabs/chips-like) */
+.ant-btn-primary.ant-btn-background-ghost,
+.ant-btn-primary.ant-btn-default {
+  background: var(--accent-light) !important;
+  border-color: #BFDBFE !important;
+  color: var(--accent-text) !important;
+}
+
+.ant-select-focused .ant-select-selector,
+.ant-select-selector:hover {
+  border-color: var(--border-focus) !important;
+}
+
+.ant-picker-focused {
+  border-color: var(--border-focus) !important;
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.16) !important;
 }
 
 /* Message/Notification */

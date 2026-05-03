@@ -16,6 +16,9 @@ class Customer(SQLModel, table=True):
     link_account_id: str = Field(foreign_key="link_accounts.id", max_length=36)
     entry_user_id: str = Field(foreign_key="users.id", max_length=36)
     last_active_at: datetime | None = Field(default=None)
+    sales_note: str | None = Field(default=None)
+    next_follow_up: datetime | None = Field(default=None)
+    gifted_tuition_amount: int = Field(default=0)
 
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)

@@ -1,4 +1,6 @@
-from fastapi import APIRouter, Depends, Query
+from datetime import datetime
+
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
@@ -24,6 +26,7 @@ from app.models.order import CustomerProduct
 from app.models.order import Order
 from app.models.product import Product
 from app.models.user import User
+from app.models.customer_course_enrollment import CustomerCourseEnrollment
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -67,6 +70,16 @@ class AdminDashboardOut(BaseModel):
     source_channels: list[dict]
     product_deals: list[dict]
     consultant_delivery: list[dict]
+
+
+class AdminCourseStatusUpdateIn(BaseModel):
+    status: str
+
+
+ADMIN_COURSE_STATUSES = {
+    "admin_marked_completed",
+    "admin_marked_completed_refunded",
+}
 
 
 @router.get("/pool", response_model=list[AdminPoolItemOut])
@@ -327,3 +340,33 @@ async def admin_dashboard(
         product_deals=product_deals,
         consultant_delivery=consultant_delivery,
     )
+
+
+@router.put("/customers/{customer_id}/courses/{enrollment_id}/status")
+async def update_admin_course_status(
+    customer_id: str,
+    enrollment_id: str,
+    body: AdminCourseStatusUpdateIn,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role("admin")),
+):
+    if body.status not in ADMIN_COURSE_STATUSES:
+        raise HTTPException(400, "管理员仅可设置后2种状态")
+
+    row = await db.execute(
+        select(CustomerCourseEnrollment).where(
+            CustomerCourseEnrollment.id == enrollment_id,
+            CustomerCourseEnrollment.customer_id == customer_id,
+        )
+    )
+    enrollment = row.scalar_one_or_none()
+    if enrollment is None:
+        raise HTTPException(404, "课程记录不存在")
+
+    enrollment.status = body.status
+    enrollment.status_updated_by = current_user.id
+    enrollment.status_updated_role = "admin"
+    enrollment.status_updated_at = datetime.utcnow()
+    enrollment.updated_at = datetime.utcnow()
+    await db.commit()
+    return {"message": "ok"}

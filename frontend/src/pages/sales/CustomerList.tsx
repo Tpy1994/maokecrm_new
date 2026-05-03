@@ -1,63 +1,92 @@
-import { useEffect, useState, useCallback } from 'react'
-import { Table, Modal, Form, Input, Select, DatePicker, Popconfirm, message } from 'antd'
-import { PlusOutlined } from '@ant-design/icons'
+﻿import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Button, DatePicker, Form, Input, Modal, Select, Table, Tag, message } from 'antd'
 import dayjs from 'dayjs'
 import { api } from '../../api/client'
 
-interface LinkAccount {
-  id: string; account_id: string; customer_count: number; is_active: boolean
-}
-interface CustomerTag {
-  id: string; name: string; color: string
-}
-interface CustomerProduct {
-  product_id: string; product_name: string; price: number; is_refunded: boolean; order_id: string | null
-}
+interface LinkAccount { id: string; account_id: string; customer_count: number; is_active: boolean }
+interface CustomerTag { id: string; name: string; color: string }
+interface TagOption { id: string; name: string; color: string; category_name: string }
+interface ProductOption { id: string; name: string; price: number; is_consultation: boolean; status: string }
+interface CourseItem { enrollment_id: string; product_id: string; product_name: string; amount_paid: number; status: string }
 interface Customer {
-  id: string; name: string; phone: string; industry: string | null; region: string | null
-  link_account_id: string; link_account_name: string | null
-  tags: CustomerTag[]; products: CustomerProduct[]
-  note: string | null; next_follow_up: string | null; follow_up_overdue: boolean
-}
-interface ProductOption {
-  id: string; name: string; price: number; is_consultation: boolean; status: string
-}
-interface TagOption {
-  id: string; name: string; color: string; category_name: string
+  id: string
+  name: string
+  phone: string
+  industry: string | null
+  region: string | null
+  link_account_id: string
+  link_account_name: string | null
+  tags: CustomerTag[]
+  note: string | null
+  next_follow_up: string | null
+  next_follow_up_status: 'overdue' | 'today' | 'future' | 'unset'
+  in_consultation_pool: boolean
+  consultation_count: number | null
+  courses: CourseItem[]
+  total_spent: number
+  gifted_tuition_amount: number
+  tuition_balance: number
 }
 
-const y2f = (cents: number) => {
-  const yuan = cents / 100
-  if (yuan >= 10000) return `${(yuan / 10000).toFixed(1)} 万`
-  return yuan.toLocaleString()
+type CourseStatusKey =
+  | 'purchased_not_started'
+  | 'sales_marked_completed'
+  | 'purchased_not_started_refunded'
+  | 'sales_marked_completed_refunded'
+  | 'admin_marked_completed'
+  | 'admin_marked_completed_refunded'
+
+const COURSE_STATUS_META: Record<CourseStatusKey, { label: string; bg: string; color: string; border: string }> = {
+  purchased_not_started: { label: '已购未上', bg: '#FDECEC', color: '#B42318', border: '#F7CACA' },
+  sales_marked_completed: { label: '销售标记已上', bg: '#EAF8EE', color: '#166534', border: '#BFE7CB' },
+  admin_marked_completed: { label: '管理员销课已上（扣结余）', bg: '#EAF2FF', color: '#1D4ED8', border: '#BFDBFE' },
+  purchased_not_started_refunded: { label: '已购未上+退款', bg: '#FDECEC', color: '#B42318', border: '#F7CACA' },
+  sales_marked_completed_refunded: { label: '销售标记已上+退款', bg: '#EAF8EE', color: '#166534', border: '#BFE7CB' },
+  admin_marked_completed_refunded: { label: '管理员销课+退款', bg: '#EAF2FF', color: '#1D4ED8', border: '#BFDBFE' },
 }
+
+const y2f = (cents: number) => `¥${(cents / 100).toLocaleString()}`
+
+const followUpLabel = (item: Customer) => {
+  if (!item.next_follow_up) return '未设置'
+  const d = dayjs(item.next_follow_up)
+  if (item.next_follow_up_status === 'today') return `今天\n${d.format('HH:00')}`
+  return `${d.format('M/D')}\n${d.format('HH:00')}`
+}
+
+const salesStatusSet = new Set<CourseStatusKey>([
+  'purchased_not_started',
+  'sales_marked_completed',
+  'purchased_not_started_refunded',
+  'sales_marked_completed_refunded',
+])
 
 export default function CustomerList() {
-  const [customers, setCustomers] = useState<Customer[]>([])
   const [linkAccounts, setLinkAccounts] = useState<LinkAccount[]>([])
-  const [selectedLA, setSelectedLA] = useState<string | null>(null)
+  const [customers, setCustomers] = useState<Customer[]>([])
   const [loading, setLoading] = useState(false)
 
-  // Modals
-  const [addOpen, setAddOpen] = useState(false)
-  const [editing, setEditing] = useState<Customer | null>(null)
-  const [customerForm] = Form.useForm()
+  const [selectedLA, setSelectedLA] = useState<string | null>(null)
+  const [keyword, setKeyword] = useState('')
 
-  const [productPickerOpen, setProductPickerOpen] = useState(false)
-  const [purchaseCustomer, setPurchaseCustomer] = useState<Customer | null>(null)
-  const [products, setProducts] = useState<ProductOption[]>([])
-  const [selectedProduct, setSelectedProduct] = useState<string | null>(null)
+  const [addWechatOpen, setAddWechatOpen] = useState(false)
+  const [addWechatForm] = Form.useForm()
 
-  const [tagPickerOpen, setTagPickerOpen] = useState(false)
-  const [tagCustomer, setTagCustomer] = useState<Customer | null>(null)
-  const [allTags, setAllTags] = useState<TagOption[]>([])
+  const [tagTarget, setTagTarget] = useState<Customer | null>(null)
+  const [tagOptions, setTagOptions] = useState<TagOption[]>([])
   const [selectedTag, setSelectedTag] = useState<string | null>(null)
 
-  // Inline note editing state
-  const [noteEditingId, setNoteEditingId] = useState<string | null>(null)
-  const [noteEditValue, setNoteEditValue] = useState('')
+  const [courseTarget, setCourseTarget] = useState<Customer | null>(null)
+  const [productOptions, setProductOptions] = useState<ProductOption[]>([])
+  const [selectedProductId, setSelectedProductId] = useState<string | null>(null)
 
-  // ─── Fetch ───
+  const [selectedStatusFilter, setSelectedStatusFilter] = useState<CourseStatusKey>('purchased_not_started')
+
+  const [editingNoteCustomerId, setEditingNoteCustomerId] = useState<string | null>(null)
+  const [noteDraft, setNoteDraft] = useState('')
+  const [savingNoteCustomerId, setSavingNoteCustomerId] = useState<string | null>(null)
+  const [savedNoteCustomerId, setSavedNoteCustomerId] = useState<string | null>(null)
+  const [editingNextCustomerId, setEditingNextCustomerId] = useState<string | null>(null)
 
   const fetchLinkAccounts = useCallback(async () => {
     setLinkAccounts(await api.get<LinkAccount[]>('/sales/link-accounts'))
@@ -66,52 +95,58 @@ export default function CustomerList() {
   const fetchCustomers = useCallback(async () => {
     setLoading(true)
     try {
-      const params = selectedLA ? `?link_account_id=${selectedLA}` : ''
-      setCustomers(await api.get<Customer[]>(`/sales/customers${params}`))
-    } finally { setLoading(false) }
-  }, [selectedLA])
+      const q: string[] = []
+      if (selectedLA) q.push(`link_account_id=${encodeURIComponent(selectedLA)}`)
+      if (keyword.trim()) q.push(`keyword=${encodeURIComponent(keyword.trim())}`)
+      const query = q.length ? `?${q.join('&')}` : ''
+      setCustomers(await api.get<Customer[]>(`/sales/customers${query}`))
+    } finally {
+      setLoading(false)
+    }
+  }, [selectedLA, keyword])
 
-  const fetchProducts = async () => {
-    setProducts(await api.get<ProductOption[]>('/sales/products'))
-  }
-
-  const fetchAllTags = async () => {
-    setAllTags(await api.get<TagOption[]>('/sales/tags'))
-  }
+  const fetchTags = async () => setTagOptions(await api.get<TagOption[]>('/sales/tags'))
+  const fetchProducts = async () => setProductOptions(await api.get<ProductOption[]>('/sales/products'))
 
   useEffect(() => { fetchLinkAccounts() }, [fetchLinkAccounts])
   useEffect(() => { fetchCustomers() }, [fetchCustomers])
 
-  // ─── Actions ───
+  const totalCustomers = useMemo(() => linkAccounts.reduce((s, a) => s + a.customer_count, 0), [linkAccounts])
 
-  const createCustomer = async () => {
-    const v = await customerForm.validateFields()
-    try {
-      await api.post('/sales/customers', v)
-      message.success('客户已创建'); setAddOpen(false); customerForm.resetFields(); fetchCustomers()
-    } catch (e) { message.error(e instanceof Error ? e.message : '失败') }
+  const submitAddWechat = async () => {
+    const v = await addWechatForm.validateFields()
+    await api.post('/sales/link-accounts', { account_id: v.account_id })
+    message.success('微信号已新增')
+    setAddWechatOpen(false)
+    addWechatForm.resetFields()
+    fetchLinkAccounts()
   }
 
-  const updateCustomer = async () => {
-    if (!editing) return
-    const v = await customerForm.validateFields()
+  const saveNote = async (customerId: string, value: string) => {
+    setSavingNoteCustomerId(customerId)
     try {
-      await api.put(`/sales/customers/${editing.id}`, { name: v.name, phone: v.phone, industry: v.industry, region: v.region })
-      message.success('已更新'); setEditing(null); customerForm.resetFields(); fetchCustomers()
-    } catch (e) { message.error(e instanceof Error ? e.message : '失败') }
+      const nextValue = value.trim() ? value : null
+      await api.put(`/sales/customers/${customerId}`, { note: nextValue })
+      setCustomers((prev) => prev.map((item) => (item.id === customerId ? { ...item, note: nextValue } : item)))
+      setSavedNoteCustomerId(customerId)
+      setTimeout(() => setSavedNoteCustomerId((curr) => (curr === customerId ? null : curr)), 1200)
+    } finally {
+      setSavingNoteCustomerId(null)
+    }
   }
 
-  const saveNote = async (customerId: string, note: string | null, nextFollowUp: string | null) => {
-    try {
-      await api.put(`/sales/customers/${customerId}`, { note, next_follow_up: nextFollowUp })
-      fetchCustomers()
-    } catch { message.error('更新失败') }
+  const saveFollowUp = async (id: string, value: string | null, note?: string | null) => {
+    await api.put(`/sales/customers/${id}`, { next_follow_up: value, note: note ?? undefined })
+    fetchCustomers()
   }
 
   const addTag = async () => {
-    if (!tagCustomer || !selectedTag) return
-    await api.post(`/sales/customers/${tagCustomer.id}/tags`, { tag_id: selectedTag })
-    message.success('标签已添加'); setTagPickerOpen(false); setSelectedTag(null); fetchCustomers()
+    if (!tagTarget || !selectedTag) return
+    await api.post(`/sales/customers/${tagTarget.id}/tags`, { tag_id: selectedTag })
+    message.success('标签已添加')
+    setTagTarget(null)
+    setSelectedTag(null)
+    fetchCustomers()
   }
 
   const removeTag = async (customerId: string, tagId: string) => {
@@ -119,205 +154,264 @@ export default function CustomerList() {
     fetchCustomers()
   }
 
-  const purchase = async () => {
-    if (!purchaseCustomer || !selectedProduct) return
-    const product = products.find(p => p.id === selectedProduct)
-    try {
-      const res = await api.post<{ message: string }>(`/sales/customers/${purchaseCustomer.id}/purchase`, {
-        product_id: selectedProduct, amount: product?.price || 0,
-      })
-      message.success(res.message || '成交成功'); setProductPickerOpen(false); setSelectedProduct(null); fetchCustomers()
-    } catch (e) { message.error(e instanceof Error ? e.message : '成交失败') }
+  const addCourse = async () => {
+    if (!courseTarget || !selectedProductId) return
+    await api.post(`/sales/customers/${courseTarget.id}/courses`, { product_id: selectedProductId })
+    message.success('已购课程已新增，默认状态为已购未上')
+    setCourseTarget(null)
+    setSelectedProductId(null)
+    fetchCustomers()
   }
 
-  const refund = async (orderId: string) => {
-    try {
-      const res = await api.post<{ impact: string; amount: number }>(`/sales/orders/${orderId}/refund`)
-      message.success(`已退款 ¥${y2f(res.amount)}，${res.impact}`)
-      fetchCustomers()
-    } catch (e) { message.error(e instanceof Error ? e.message : '退款失败') }
+  const updateCourseStatus = async (customerId: string, enrollmentId: string, status: CourseStatusKey) => {
+    if (!salesStatusSet.has(status)) return
+    await api.put(`/sales/customers/${customerId}/courses/${enrollmentId}/status`, { status })
+    fetchCustomers()
   }
-
-  // ─── Table Columns ───
 
   const columns = [
+    { title: '客户', width: 130, render: (_: unknown, r: Customer) => <div><div style={{ fontWeight: 700, fontSize: 13, lineHeight: 1.2 }}>{r.name}</div><div style={{ fontSize: 11, color: '#8c8c8c', lineHeight: 1.2, marginTop: 2 }}>{r.phone}</div></div> },
     {
-      title: '客户', key: 'name', width: 180,
-      render: (_: unknown, r: Customer) => (
-        <div>
-          <div style={{ fontWeight: 600, fontSize: 13 }}>{r.name}</div>
-          <div style={{ fontSize: 11, color: '#8E8E8E' }}>{(r.industry ? r.industry + '·' : '') + (r.region || '')}</div>
-        </div>
-      ),
-    },
-    {
-      title: '绑定微信', key: 'wechat', width: 120,
-      render: (_: unknown, r: Customer) => (
-        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }}>{r.link_account_name || '-'}</span>
-      ),
-    },
-    {
-      title: '标签', key: 'tags', width: 200,
+      title: '标签', width: 130,
       render: (_: unknown, r: Customer) => (
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, alignItems: 'center' }}>
-          {r.tags.map(t => (
-            <span key={t.id} style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 10, padding: '1px 7px', borderRadius: 3, background: t.color + '18', color: t.color, border: '1px solid ' + t.color + '26' }}>
+          {r.tags.map((t) => (
+            <Tag key={t.id} color={t.color} style={{ marginInlineEnd: 0, fontSize: 10, lineHeight: '14px', paddingInline: 6 }}>
               {t.name}
-              <button onClick={() => removeTag(r.id, t.id)} style={{ border: 'none', background: 'none', cursor: 'pointer', color: 'inherit', opacity: 0.5, padding: 0, fontSize: 11, lineHeight: 1 }}>×</button>
-            </span>
+              <button onClick={() => removeTag(r.id, t.id)} style={{ border: 'none', background: 'none', cursor: 'pointer', color: 'inherit', opacity: 0.6, padding: 0, marginLeft: 4, fontSize: 10 }}>×</button>
+            </Tag>
           ))}
-          <button onClick={() => { setTagCustomer(r); fetchAllTags(); setSelectedTag(null); setTagPickerOpen(true) }}
-            style={{ border: '1px dashed #E8E8E3', background: 'none', cursor: 'pointer', color: '#8E8E8E', fontSize: 10, padding: '1px 6px', borderRadius: 3 }}>+</button>
+          <button onClick={() => { setTagTarget(r); setSelectedTag(null); fetchTags() }} style={{ border: '1px dashed #E8E8E3', background: 'none', cursor: 'pointer', color: '#8E8E8E', fontSize: 10, padding: '0 5px', borderRadius: 3, lineHeight: '14px' }}>+</button>
         </div>
-      ),
+      )
     },
     {
-      title: '已购课程', key: 'products', width: 200,
+      title: '已购课程', width: 210,
       render: (_: unknown, r: Customer) => (
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-          {r.products.map(p => (
-            <span key={p.product_id} style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 10, padding: '1px 7px', borderRadius: 3, background: p.is_refunded ? '#FEF2F2' : '#F2F2ED', color: p.is_refunded ? '#DC2626' : '#4A4A4A', textDecoration: p.is_refunded ? 'line-through' : 'none', border: `1px solid ${p.is_refunded ? '#DC262620' : '#E8E8E3'}` }}>
-              {p.product_name} ¥{y2f(p.price)}
-              {!p.is_refunded && p.order_id && (
-                <Popconfirm title={`确认退款 ¥${y2f(p.price)}？`} onConfirm={() => refund(p.order_id!)}>
-                  <button style={{ border: 'none', background: 'none', cursor: 'pointer', color: '#DC2626', opacity: 0.6, padding: 0, fontSize: 11, lineHeight: 1, marginLeft: 2 }}>×</button>
-                </Popconfirm>
-              )}
-            </span>
-          ))}
-          <button onClick={() => { setPurchaseCustomer(r); fetchProducts(); setSelectedProduct(null); setProductPickerOpen(true) }}
-            style={{ border: '1px dashed #E8E8E3', background: 'none', cursor: 'pointer', color: '#1677ff', fontSize: 10, padding: '1px 6px', borderRadius: 3 }}>+添加</button>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          {r.courses.map((c) => {
+            const meta = COURSE_STATUS_META[c.status as CourseStatusKey]
+            const isRefunded = c.status.includes('refunded')
+            return (
+              <button
+                key={c.enrollment_id}
+                onClick={() => updateCourseStatus(r.id, c.enrollment_id, selectedStatusFilter)}
+                style={{
+                  border: `1px solid ${meta?.border || '#d9d9d9'}`,
+                  background: meta?.bg || '#f5f5f5',
+                  color: meta?.color || '#595959',
+                  borderRadius: 4,
+                  padding: '1px 6px',
+                  textAlign: 'left',
+                  cursor: 'pointer',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  width: 'fit-content',
+                  maxWidth: '100%',
+                  fontSize: 11,
+                }}
+              >
+                <span style={{ textDecoration: isRefunded ? 'line-through' : 'none', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 150 }}>{c.product_name}</span>
+                <span style={{ opacity: 0.75, fontSize: 10 }}>×</span>
+              </button>
+            )
+          })}
+          <button onClick={() => { setCourseTarget(r); setSelectedProductId(null); fetchProducts() }} style={{ border: '1px dashed #E8E8E3', background: 'none', cursor: 'pointer', color: '#8E8E8E', fontSize: 10, padding: '0 5px', borderRadius: 3, width: 'fit-content', lineHeight: '14px' }}>+</button>
         </div>
-      ),
+      )
     },
+    { title: '累计花费', width: 95, render: (_: unknown, r: Customer) => <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }}>{y2f(r.total_spent)}</span> },
+    { title: '学费结余', width: 95, render: (_: unknown, r: Customer) => <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: '#16A34A' }}>{y2f(r.tuition_balance)}</span> },
     {
-      title: '备注', key: 'note', width: 140,
+      title: '备注', width: 160,
       render: (_: unknown, r: Customer) => {
-        const isEditing = noteEditingId === r.id
-        return isEditing ? (
-          <Input.TextArea size="small" value={noteEditValue} onChange={e => setNoteEditValue(e.target.value)} autoSize
-            onBlur={() => { setNoteEditingId(null); saveNote(r.id, noteEditValue || null, r.next_follow_up) }}
-            style={{ fontSize: 11 }} autoFocus />
-        ) : (
-          <div onClick={() => { setNoteEditingId(r.id); setNoteEditValue(r.note || '') }}
-            style={{ fontSize: 11, color: r.note ? '#4A4A4A' : '#B8B8B8', cursor: 'pointer', minHeight: 20 }}>
-            {r.note || '点击添加备注'}
+        const isEditing = editingNoteCustomerId === r.id
+        const isSaving = savingNoteCustomerId === r.id
+        const isSaved = savedNoteCustomerId === r.id
+        if (!isEditing) {
+          return <div onClick={() => { setEditingNoteCustomerId(r.id); setNoteDraft(r.note || '') }} style={{ minHeight: 22, padding: '2px 6px', border: '1px solid transparent', borderRadius: 6, cursor: 'text', fontSize: 12, lineHeight: 1.4 }}>{r.note || <span style={{ color: '#bfbfbf' }}>点击填写备注</span>}</div>
+        }
+        return (
+          <div>
+            <Input.TextArea
+              value={noteDraft}
+              autoFocus
+              autoSize={{ minRows: 1, maxRows: 3 }}
+              onChange={(e) => setNoteDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') {
+                  e.preventDefault(); setEditingNoteCustomerId(null); setNoteDraft(''); return
+                }
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault()
+                  saveNote(r.id, noteDraft).then(() => { setEditingNoteCustomerId(null); setNoteDraft('') })
+                }
+              }}
+              onBlur={() => saveNote(r.id, noteDraft).then(() => { setEditingNoteCustomerId(null); setNoteDraft('') })}
+            />
+            <div style={{ marginTop: 4, color: '#8c8c8c', fontSize: 11 }}>
+              Enter 保存　Esc 取消　{isSaving ? '保存中...' : isSaved ? <span style={{ color: '#389e0d' }}>已自动保存</span> : ''}
+            </div>
           </div>
         )
-      },
+      }
     },
     {
-      title: '下次跟进', key: 'follow_up', width: 140,
-      render: (_: unknown, r: Customer) => (
-        <DatePicker size="small" value={r.next_follow_up ? dayjs(r.next_follow_up) : null}
-          onChange={(d) => saveNote(r.id, r.note, d ? d.toISOString() : null)}
-          style={{ width: '100%', background: r.follow_up_overdue ? '#FEF2F2' : undefined, borderColor: r.follow_up_overdue ? '#DC2626' : undefined }}
-          placeholder="未设置" format="MM-DD" />
-      ),
+      title: '下次跟进', width: 100,
+      render: (_: unknown, r: Customer) => {
+        const color = r.next_follow_up_status === 'overdue' ? '#a8071a' : '#003a8c'
+        const isEditingNext = editingNextCustomerId === r.id
+        const lines = followUpLabel(r).split('\n')
+        if (isEditingNext) {
+          return (
+            <DatePicker
+              open
+              autoFocus
+              value={r.next_follow_up ? dayjs(r.next_follow_up) : null}
+              showTime={{
+                format: 'HH:00',
+                disabledTime: () => ({
+                  disabledMinutes: () => Array.from({ length: 59 }, (_, i) => i + 1),
+                }),
+              }}
+              format="YYYY-MM-DD HH:00"
+              style={{ width: 150 }}
+              onChange={async (val) => {
+                await saveFollowUp(r.id, val ? dayjs(val).startOf('hour').toISOString() : null, r.note)
+                setEditingNextCustomerId(null)
+              }}
+              onOpenChange={(open) => {
+                if (!open) setEditingNextCustomerId(null)
+              }}
+            />
+          )
+        }
+        return (
+          <button
+            onClick={() => setEditingNextCustomerId(r.id)}
+            style={{ border: 'none', background: 'transparent', padding: 0, textAlign: 'left', cursor: 'pointer' }}
+          >
+            <div>
+              <div style={{ color, fontWeight: 700, fontSize: 13, lineHeight: 1.2 }}>{lines[0]}</div>
+              <div style={{ color, fontSize: 11, lineHeight: 1.2 }}>{lines[1] || ''}</div>
+            </div>
+          </button>
+        )
+      }
     },
+    { title: '咨询池', width: 70, render: (_: unknown, r: Customer) => (r.in_consultation_pool ? <Tag color='green' style={{ fontSize: 10, lineHeight: '14px' }}>是</Tag> : <Tag style={{ fontSize: 10, lineHeight: '14px' }}>否</Tag>) },
+    { title: '咨询次数', width: 80, render: (_: unknown, r: Customer) => <Select size='small' value={r.consultation_count ?? undefined} style={{ width: 60 }} placeholder='—' disabled={r.consultation_count === null} options={Array.from({ length: 21 }, (_, i) => ({ value: i, label: `${i}` }))} onChange={async (val) => { await api.put(`/sales/customers/${r.id}`, { consultation_count: val }); fetchCustomers() }} /> },
+    { title: '绑定微信', width: 90, dataIndex: 'link_account_name', render: (v: string | null) => <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }}>{v || '-'}</span> },
   ]
-
-  const totalCustomers = linkAccounts.reduce((s, a) => s + a.customer_count, 0)
 
   return (
     <div>
-      <div className="page-header">
-        <div>
-          <h2>我的客户</h2>
-          <p className="page-subtitle">管理客户信息、成交记录与跟进计划</p>
+      <div style={{ background: '#fff', border: '1px solid #e8e8e3', borderRadius: 10, padding: 14, marginBottom: 14 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+          <div style={{ fontWeight: 700, color: '#595959' }}>我的微信号</div>
+          <Button onClick={() => { addWechatForm.resetFields(); setAddWechatOpen(true) }}>+ 新增微信号</Button>
         </div>
-        <button onClick={() => { customerForm.resetFields(); setAddOpen(true) }}
-          style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '7px 16px', borderRadius: 8, border: 'none', background: '#0E0E0E', color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit', transition: 'background 0.15s' }}
-          onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = '#4A4A4A'}
-          onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = '#0E0E0E'}
-        ><PlusOutlined /> 新增客户</button>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <Button type={selectedLA === null ? 'primary' : 'default'} onClick={() => setSelectedLA(null)}>
+            全部
+            <span style={{ marginLeft: 6, fontSize: 11, color: selectedLA === null ? '#1D4ED8' : '#8E8E8E' }}>{totalCustomers}</span>
+          </Button>
+          {linkAccounts.map((la) => (
+            <button key={la.id} onClick={() => setSelectedLA(la.id)} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, height: 32, padding: '0 12px', borderRadius: 8, border: `1px solid ${selectedLA === la.id ? '#BFDBFE' : '#D9D9D9'}`, background: selectedLA === la.id ? '#EAF2FF' : '#fff', cursor: 'pointer' }}>
+              <span style={{ width: 6, height: 6, borderRadius: 3, background: la.is_active ? '#16A34A' : '#BFBFBF' }} />
+              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: '#111827' }}>{la.account_id}</span>
+              <span style={{ fontSize: 10, lineHeight: '16px', padding: '0 6px', borderRadius: 10, color: selectedLA === la.id ? '#1D4ED8' : '#6B7280', background: selectedLA === la.id ? '#DBEAFE' : '#F3F4F6' }}>{la.customer_count}</span>
+            </button>
+          ))}
+        </div>
       </div>
 
-      {/* Wechat Filter */}
-      <div style={{ display: 'flex', gap: 6, marginBottom: 20, flexWrap: 'wrap', alignItems: 'center' }}>
-        <button onClick={() => setSelectedLA(null)} style={{ padding: '5px 14px', borderRadius: 7, border: '1px solid #E8E8E3', background: selectedLA === null ? '#F2F2ED' : '#fff', color: selectedLA === null ? '#0E0E0E' : '#4A4A4A', fontWeight: selectedLA === null ? 600 : 400, fontSize: 12, cursor: 'pointer', fontFamily: 'inherit' }}>
-          全部（{totalCustomers}）
-        </button>
-        {linkAccounts.map(la => (
-          <button key={la.id} onClick={() => setSelectedLA(la.id)} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '5px 12px', borderRadius: 7, border: '1px solid #E8E8E3', background: selectedLA === la.id ? '#F2F2ED' : '#fff', fontWeight: selectedLA === la.id ? 600 : 400, fontSize: 12, cursor: 'pointer', fontFamily: 'inherit' }}>
-            <span style={{ width: 6, height: 6, borderRadius: 3, background: la.is_active ? '#22C55E' : '#B8B8B8' }} />
-            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11 }}>{la.account_id}</span>
-            <span style={{ fontSize: 10, padding: '0 5px', borderRadius: 8, background: selectedLA === la.id ? '#D4A27F20' : '#F2F2ED', color: selectedLA === la.id ? '#D4A27F' : '#8E8E8E' }}>{la.customer_count}</span>
-          </button>
-        ))}
-        <button style={{ padding: '5px 12px', borderRadius: 7, border: '1px dashed #E8E8E3', background: 'transparent', color: '#8E8E8E', fontSize: 12, cursor: 'pointer', fontFamily: 'inherit' }}>+ 申请绑定新微信</button>
+      <div style={{ background: '#fff', border: '1px solid #e8e8e3', borderRadius: 10, padding: 14, marginBottom: 14 }}>
+        <div style={{ color: '#595959', fontSize: 13, marginBottom: 8 }}>已购课程标签的 6 种状态</div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(220px, 1fr))', gap: 10 }}>
+          {([
+            'purchased_not_started',
+            'sales_marked_completed',
+            'admin_marked_completed',
+            'purchased_not_started_refunded',
+            'sales_marked_completed_refunded',
+            'admin_marked_completed_refunded',
+          ] as CourseStatusKey[]).map((key) => {
+            const meta = COURSE_STATUS_META[key]
+            const active = selectedStatusFilter === key
+            const isRefunded = key.includes('refunded')
+            return (
+              <button
+                key={key}
+                onClick={() => setSelectedStatusFilter(key)}
+                style={{
+                  textAlign: 'left',
+                  borderRadius: 6,
+                  border: `1px solid ${active ? '#3B82F6' : meta.border}`,
+                  background: '#fff',
+                  color: '#595959',
+                  padding: '8px 10px',
+                  cursor: salesStatusSet.has(key) ? 'pointer' : 'not-allowed',
+                  opacity: salesStatusSet.has(key) ? 1 : 0.7,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 8,
+                }}
+              >
+                <span style={{ background: meta.bg, color: meta.color, border: `1px solid ${meta.border}`, borderRadius: 4, padding: '1px 8px', fontSize: 12, textDecoration: isRefunded ? 'line-through' : 'none' }}>
+                  电商管理课
+                </span>
+                <span style={{ fontSize: 12, color: '#595959', textDecoration: isRefunded ? 'line-through' : 'none' }}>{meta.label}</span>
+              </button>
+            )
+          })}
+        </div>
       </div>
 
-      {/* Customer Table */}
-      <div style={{ background: '#fff', borderRadius: 10, border: '1px solid #E8E8E3', overflow: 'hidden' }}>
-        <Table rowKey="id" dataSource={customers} columns={columns} loading={loading} pagination={false} scroll={{ x: 1200 }} />
+      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 14 }}>
+        <div><h2 style={{ marginBottom: 2 }}>我的客户</h2><div style={{ color: '#8c8c8c', fontSize: 12 }}>当前筛选共 {customers.length} 个客户</div></div>
+        <div style={{ display: 'flex', gap: 10 }}>
+          <Input.Search placeholder='搜索客户名/标签/备注' style={{ width: 260 }} value={keyword} onChange={(e) => setKeyword(e.target.value)} onSearch={() => fetchCustomers()} />
+          <Button>批量导入</Button>
+          <Button type='primary'>+ 新建客户</Button>
+        </div>
       </div>
 
-      {/* Add Customer */}
-      <Modal title="新增客户" open={addOpen} onOk={createCustomer} onCancel={() => setAddOpen(false)} destroyOnClose width={460}>
-        <Form form={customerForm} layout="vertical">
-          <div style={{ display: 'flex', gap: 16 }}>
-            <Form.Item name="name" label="姓名" rules={[{ required: true }]} style={{ flex: 1 }}><Input /></Form.Item>
-            <Form.Item name="phone" label="手机号" rules={[{ required: true }]} style={{ flex: 1 }}><Input /></Form.Item>
-          </div>
-          <div style={{ display: 'flex', gap: 16 }}>
-            <Form.Item name="industry" label="行业" style={{ flex: 1 }}><Input placeholder="如：服装" /></Form.Item>
-            <Form.Item name="region" label="地域" style={{ flex: 1 }}><Input placeholder="如：浙江杭州" /></Form.Item>
-          </div>
-          <Form.Item name="link_account_id" label="绑定微信" rules={[{ required: true }]}>
-            <Select placeholder="选择微信号">
-              {linkAccounts.map(la => (
-                <Select.Option key={la.id} value={la.id}>
-                  <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }}>{la.account_id}</span>
-                  <span style={{ color: '#8E8E8E', fontSize: 11, marginLeft: 8 }}>{la.customer_count}个客户</span>
-                </Select.Option>
-              ))}
-            </Select>
+      <Table
+        rowKey='id'
+        dataSource={customers}
+        columns={columns}
+        loading={loading}
+        pagination={false}
+        size='small'
+        tableLayout='fixed'
+      />
+
+      <Modal title='新增微信号' open={addWechatOpen} onOk={submitAddWechat} onCancel={() => setAddWechatOpen(false)}>
+        <Form form={addWechatForm} layout='vertical'>
+          <Form.Item name='account_id' label='微信号' rules={[{ required: true, message: '请输入微信号' }]}>
+            <Input placeholder='例如 maoke_1234' />
           </Form.Item>
         </Form>
       </Modal>
 
-      {/* Edit Customer */}
-      <Modal title="编辑客户" open={!!editing} onOk={updateCustomer} onCancel={() => setEditing(null)} destroyOnClose width={460}>
-        <Form form={customerForm} layout="vertical">
-          <div style={{ display: 'flex', gap: 16 }}>
-            <Form.Item name="name" label="姓名" rules={[{ required: true }]} style={{ flex: 1 }}><Input /></Form.Item>
-            <Form.Item name="phone" label="手机号" rules={[{ required: true }]} style={{ flex: 1 }}><Input /></Form.Item>
-          </div>
-          <div style={{ display: 'flex', gap: 16 }}>
-            <Form.Item name="industry" label="行业" style={{ flex: 1 }}><Input /></Form.Item>
-            <Form.Item name="region" label="地域" style={{ flex: 1 }}><Input /></Form.Item>
-          </div>
-        </Form>
-      </Modal>
-
-      {/* Product Picker */}
-      <Modal title="选择产品成交" open={productPickerOpen} onOk={purchase} onCancel={() => setProductPickerOpen(false)} okText="确认成交" width={420}>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          {products.filter(p => p.status === 'active').map(p => {
-            const isSelected = selectedProduct === p.id
-            return (
-              <div key={p.id} onClick={() => setSelectedProduct(p.id)} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 14px', borderRadius: 8, cursor: 'pointer', border: `1px solid ${isSelected ? '#0E0E0E' : '#E8E8E3'}`, background: isSelected ? '#FDFDF7' : '#fff' }}>
-                <div>
-                  <div style={{ fontSize: 13, fontWeight: 500 }}>{p.name}</div>
-                  {p.is_consultation && <span style={{ fontSize: 10, color: '#22C55E' }}>咨询类 · 自动入池</span>}
-                </div>
-                <span style={{ fontWeight: 600, fontFamily: 'var(--font-mono)', fontSize: 13 }}>¥{y2f(p.price)}</span>
-              </div>
-            )
-          })}
-        </div>
-      </Modal>
-
-      {/* Tag Picker */}
-      <Modal title="添加标签" open={tagPickerOpen} onOk={addTag} onCancel={() => setTagPickerOpen(false)} okText="添加" width={420}>
-        <Select value={selectedTag} onChange={setSelectedTag} style={{ width: '100%' }} placeholder="搜索并选择标签" showSearch optionFilterProp="label">
-          {allTags.map(t => (
+      <Modal title='添加标签' open={!!tagTarget} onOk={addTag} onCancel={() => { setTagTarget(null); setSelectedTag(null) }}>
+        <Select value={selectedTag} onChange={setSelectedTag} style={{ width: '100%' }} placeholder='搜索并选择标签' showSearch optionFilterProp='label'>
+          {tagOptions.map((t) => (
             <Select.Option key={t.id} value={t.id} label={t.name}>
               <span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: 2, background: t.color, marginRight: 6 }} />
               {t.name}
               <span style={{ color: '#B8B8B8', fontSize: 10, marginLeft: 6 }}>{t.category_name}</span>
             </Select.Option>
+          ))}
+        </Select>
+      </Modal>
+
+      <Modal title='新增已购课程' open={!!courseTarget} onOk={addCourse} onCancel={() => { setCourseTarget(null); setSelectedProductId(null) }}>
+        <Select value={selectedProductId} onChange={setSelectedProductId} style={{ width: '100%' }} placeholder='选择课程'>
+          {productOptions.filter((p) => p.status === 'active').map((p) => (
+            <Select.Option key={p.id} value={p.id}>{p.name}（{y2f(p.price)}）</Select.Option>
           ))}
         </Select>
       </Modal>
