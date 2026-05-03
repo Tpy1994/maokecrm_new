@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
+from sqlalchemy import and_
 
 from app.api.v1.consultant import (
     ConsultantBadgeOut,
@@ -25,6 +26,7 @@ from app.models.link_account import LinkAccount
 from app.models.order import CustomerProduct
 from app.models.order import Order
 from app.models.product import Product
+from app.models.tag import CustomerTag, Tag, TagCategory
 from app.models.user import User
 from app.models.customer_course_enrollment import CustomerCourseEnrollment
 
@@ -32,23 +34,26 @@ router = APIRouter(prefix="/admin", tags=["admin"])
 
 
 class AdminPoolItemOut(BaseModel):
-    pool_id: str
+    pool_id: str | None
     customer_id: str
     customer_name: str
-    phone: str
-    wechat_name: str | None
-    source_channel: str | None
-    deal_product: str | None
-    deal_amount: int | None
-    pool_entered_at: str
+    customer_info: str
     tags: list[TagOut]
-    products: list[ProductOut]
     sales_name: str | None
-    consultants: list[ConsultantBadgeOut]
-    service_status: str
-    consultant_count: int
-    can_claim: bool
-    can_join: bool
+    entered_days: int
+    claim_status: str
+    pool_entered_at: str
+
+
+class AdminPoolSummaryOut(BaseModel):
+    pending: int
+    active: int
+    ended: int
+
+
+class AdminPoolOut(BaseModel):
+    summary: AdminPoolSummaryOut
+    items: list[AdminPoolItemOut]
 
 
 class AdminCustomerItemOut(BaseModel):
@@ -82,80 +87,73 @@ ADMIN_COURSE_STATUSES = {
 }
 
 
-@router.get("/pool", response_model=list[AdminPoolItemOut])
+@router.get("/pool", response_model=AdminPoolOut)
 async def admin_pool(
+    status: str = Query("pending"),
     keyword: str | None = Query(None),
     db: AsyncSession = Depends(get_db),
     _: User = Depends(require_role("admin")),
 ):
-    customers_r = await db.execute(select(Customer).order_by(Customer.created_at.desc()))
-    out: list[AdminPoolItemOut] = []
+    if status not in {"pending", "active", "ended"}:
+        raise HTTPException(400, "invalid status")
 
-    for c in customers_r.scalars().all():
-        tags = await _build_tags(c.id, db)
+    summary_rows = await db.execute(
+        select(ConsultantCustomer.status, func.count(ConsultantCustomer.id))
+        .where(ConsultantCustomer.status.in_(["pending", "active", "ended"]))
+        .group_by(ConsultantCustomer.status)
+    )
+    summary_map = {s: int(c) for s, c in summary_rows.all()}
+
+    rows = await db.execute(
+        select(ConsultantCustomer, Customer, User.name)
+        .join(Customer, ConsultantCustomer.customer_id == Customer.id)
+        .join(User, Customer.entry_user_id == User.id, isouter=True)
+        .where(ConsultantCustomer.status == status)
+        .order_by(ConsultantCustomer.created_at.asc())
+    )
+
+    out: list[AdminPoolItemOut] = []
+    now = datetime.utcnow()
+    for rel, customer, sales_name in rows.all():
+        tag_rows = await db.execute(
+            select(Tag, TagCategory)
+            .join(TagCategory, Tag.category_id == TagCategory.id)
+            .join(CustomerTag, and_(CustomerTag.tag_id == Tag.id, CustomerTag.customer_id == customer.id))
+            .order_by(TagCategory.sort_order.asc(), Tag.name.asc())
+        )
+        tags = [TagOut(id=t.id, name=t.name, color=tc.color) for t, tc in tag_rows.all()]
+
         if keyword:
             k = keyword.strip().lower()
-            if k and k not in c.name.lower() and not any(k in t.name.lower() for t in tags):
-                continue
+            if k:
+                if k not in customer.name.lower() and k not in customer.phone.lower() and not any(k in t.name.lower() for t in tags):
+                    continue
 
-        products, _ = await _build_products(c.id, db)
-        consultants = await _build_consultants(c.id, "", db)
-
-        pending_r = await db.execute(
-            select(ConsultantCustomer)
-            .where(ConsultantCustomer.customer_id == c.id, ConsultantCustomer.status == "pending")
-            .order_by(ConsultantCustomer.created_at.asc())
-        )
-        pending_rel = pending_r.scalars().first()
-        if pending_rel:
-            pool_rel = pending_rel
-        else:
-            any_rel_r = await db.execute(
-                select(ConsultantCustomer)
-                .where(
-                    ConsultantCustomer.customer_id == c.id,
-                    ConsultantCustomer.status.in_(["active", "ended"]),
-                )
-                .order_by(ConsultantCustomer.created_at.asc())
-            )
-            pool_rel = any_rel_r.scalars().first()
-
-        pool_entered_at = (pool_rel.created_at if pool_rel else c.created_at).isoformat()
-        pool_id = pool_rel.id if pool_rel else ""
-        consultant_count = len(consultants)
-        service_status = "unclaimed" if consultant_count == 0 else "serving"
-
-        sales_r = await db.execute(select(User.name).where(User.id == c.entry_user_id))
-        sales_name = sales_r.scalar_one_or_none()
-        link_r = await db.execute(select(LinkAccount.account_id).where(LinkAccount.id == c.link_account_id))
-        wechat_name = link_r.scalar_one_or_none()
-        source_channel = c.industry or c.region or None
-        deal_product = products[0].product_name if products else None
+        entered_days = max(0, (now.date() - rel.created_at.date()).days)
+        claim_status = "未认领" if rel.status == "pending" else ("进行中" if rel.status == "active" else "已结束")
 
         out.append(
             AdminPoolItemOut(
-                pool_id=pool_id,
-                customer_id=c.id,
-                customer_name=c.name,
-                phone=c.phone,
-                wechat_name=wechat_name,
-                source_channel=source_channel,
-                deal_product=deal_product,
-                deal_amount=None,
-                pool_entered_at=pool_entered_at,
+                pool_id=rel.id,
+                customer_id=customer.id,
+                customer_name=customer.name,
+                customer_info=f"{customer.industry or ''} · {customer.region or ''}".strip(" ·"),
                 tags=tags,
-                products=products,
                 sales_name=sales_name,
-                consultants=consultants,
-                service_status=service_status,
-                consultant_count=consultant_count,
-                can_claim=False,
-                can_join=False,
+                entered_days=entered_days,
+                claim_status=claim_status,
+                pool_entered_at=rel.created_at.isoformat(),
             )
         )
 
-    out.sort(key=lambda i: (0 if i.service_status == "unclaimed" else 1, i.pool_entered_at))
-    return out
+    return AdminPoolOut(
+        summary=AdminPoolSummaryOut(
+            pending=summary_map.get("pending", 0),
+            active=summary_map.get("active", 0),
+            ended=summary_map.get("ended", 0),
+        ),
+        items=out,
+    )
 
 
 @router.get("/customers", response_model=list[AdminCustomerItemOut])
