@@ -1,4 +1,4 @@
-import json
+﻿import json
 from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -11,6 +11,7 @@ from app.models.audit_log import AuditLog
 from app.models.consultant_customer import ConsultantCustomer
 from app.models.consultation_log import ConsultationLog
 from app.models.customer import Customer
+from app.models.customer_course_enrollment import CustomerCourseEnrollment
 from app.models.link_account import LinkAccount
 from app.models.order import CustomerProduct
 from app.models.product import Product
@@ -30,6 +31,7 @@ class ProductOut(BaseModel):
     product_id: str
     product_name: str
     is_refunded: bool
+    status: str | None = None
 
 
 class ConsultantBadgeOut(BaseModel):
@@ -87,9 +89,12 @@ class LogItemOut(BaseModel):
     log_date: str
     duration: int
     summary: str | None
-    content: str | None
     created_at: str
     updated_at: str
+
+
+class LogDetailOut(LogItemOut):
+    content: str | None
 
 
 class ConsultantCustomerDetailOut(BaseModel):
@@ -135,6 +140,29 @@ class DashboardOut(BaseModel):
 
 class TagAssignIn(BaseModel):
     tag_id: str
+
+
+async def _write_audit_log(
+    db: AsyncSession,
+    *,
+    resource_type: str,
+    resource_id: str,
+    customer_id: str | None,
+    action: str,
+    operator: User,
+    changes: dict | None = None,
+) -> None:
+    db.add(
+        AuditLog(
+            resource_type=resource_type,
+            resource_id=resource_id,
+            customer_id=customer_id,
+            action=action,
+            operator_user_id=operator.id,
+            operator_role=operator.role,
+            changes=json.dumps(changes, ensure_ascii=False) if changes is not None else None,
+        )
+    )
 
 
 def _customer_info(customer: Customer) -> str:
@@ -202,21 +230,23 @@ async def _build_tags(customer_id: str, db: AsyncSession) -> list[TagOut]:
 
 async def _build_products(customer_id: str, db: AsyncSession) -> tuple[list[ProductOut], bool]:
     rows = await db.execute(
-        select(CustomerProduct, Product)
-        .join(Product, Product.id == CustomerProduct.product_id)
-        .where(CustomerProduct.customer_id == customer_id)
-        .order_by(Product.name)
+        select(CustomerCourseEnrollment, Product)
+        .join(Product, Product.id == CustomerCourseEnrollment.product_id)
+        .where(CustomerCourseEnrollment.customer_id == customer_id)
+        .order_by(CustomerCourseEnrollment.created_at.desc())
     )
     items: list[ProductOut] = []
     refunded = False
-    for cp, p in rows.all():
-        if cp.is_refunded:
+    for enrollment, p in rows.all():
+        is_refunded = "refunded" in (enrollment.status or "")
+        if is_refunded:
             refunded = True
         items.append(
             ProductOut(
                 product_id=p.id,
                 product_name=p.name,
-                is_refunded=cp.is_refunded,
+                is_refunded=is_refunded,
+                status=enrollment.status,
             )
         )
     return items, refunded
@@ -642,11 +672,21 @@ async def list_logs(
     if keyword and keyword.strip():
         k = f"%{keyword.strip()}%"
         conditions.append(
-            (ConsultationLog.summary.ilike(k)) | (ConsultationLog.content.ilike(k))
+            ConsultationLog.summary.ilike(k)
         )
 
     rows = await db.execute(
-        select(ConsultationLog, User)
+        select(
+            ConsultationLog.id,
+            ConsultationLog.customer_id,
+            ConsultationLog.consultant_id,
+            ConsultationLog.log_date,
+            ConsultationLog.duration,
+            ConsultationLog.summary,
+            ConsultationLog.created_at,
+            ConsultationLog.updated_at,
+            User.name,
+        )
         .join(User, User.id == ConsultationLog.consultant_id)
         .where(*conditions)
         .order_by(ConsultationLog.log_date.desc(), ConsultationLog.created_at.desc())
@@ -655,21 +695,65 @@ async def list_logs(
     )
     return [
         LogItemOut(
-            id=log.id,
-            customer_id=log.customer_id,
-            consultant_id=u.id,
-            consultant_name=u.name,
-            is_me=(log.consultant_id == current_user.id),
-            editable=(current_user.role == "consultant" and log.consultant_id == current_user.id),
-            log_date=log.log_date.isoformat(),
-            duration=log.duration,
-            summary=log.summary,
-            content=log.content,
-            created_at=log.created_at.isoformat(),
-            updated_at=log.updated_at.isoformat(),
+            id=log_id,
+            customer_id=log_customer_id,
+            consultant_id=log_consultant_id,
+            consultant_name=consultant_name,
+            is_me=(log_consultant_id == current_user.id),
+            editable=(current_user.role == "consultant" and log_consultant_id == current_user.id),
+            log_date=log_date.isoformat(),
+            duration=log_duration,
+            summary=log_summary,
+            created_at=log_created_at.isoformat(),
+            updated_at=log_updated_at.isoformat(),
         )
-        for log, u in rows.all()
+        for (
+            log_id,
+            log_customer_id,
+            log_consultant_id,
+            log_date,
+            log_duration,
+            log_summary,
+            log_created_at,
+            log_updated_at,
+            consultant_name,
+        ) in rows.all()
     ]
+
+
+@router.get("/logs/{log_id}", response_model=LogDetailOut)
+async def get_log_detail(
+    log_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role("admin", "sales", "consultant")),
+):
+    row = await db.execute(
+        select(ConsultationLog, User.name)
+        .join(User, User.id == ConsultationLog.consultant_id)
+        .where(ConsultationLog.id == log_id)
+    )
+    pair = row.first()
+    if pair is None:
+        raise HTTPException(404, "咨询日志不存在")
+    log, consultant_name = pair
+
+    if current_user.role == "consultant":
+        await _ensure_access(log.customer_id, current_user, db)
+
+    return LogDetailOut(
+        id=log.id,
+        customer_id=log.customer_id,
+        consultant_id=log.consultant_id,
+        consultant_name=consultant_name,
+        is_me=(log.consultant_id == current_user.id),
+        editable=(current_user.role == "consultant" and log.consultant_id == current_user.id),
+        log_date=log.log_date.isoformat(),
+        duration=log.duration,
+        summary=log.summary,
+        content=log.content,
+        created_at=log.created_at.isoformat(),
+        updated_at=log.updated_at.isoformat(),
+    )
 
 
 @router.get("/customers/{customer_id}/detail", response_model=ConsultantCustomerDetailOut)
@@ -721,7 +805,7 @@ async def customer_detail(
     )
 
 
-@router.post("/customers/{customer_id}/logs", response_model=LogItemOut)
+@router.post("/customers/{customer_id}/logs", response_model=LogDetailOut)
 async def create_log(
     customer_id: str,
     body: UpsertLogIn,
@@ -757,7 +841,7 @@ async def create_log(
     )
     await db.commit()
 
-    return LogItemOut(
+    return LogDetailOut(
         id=log.id,
         customer_id=log.customer_id,
         consultant_id=current_user.id,
@@ -773,7 +857,7 @@ async def create_log(
     )
 
 
-@router.put("/logs/{log_id}", response_model=LogItemOut)
+@router.put("/logs/{log_id}", response_model=LogDetailOut)
 async def update_log(
     log_id: str,
     body: UpsertLogIn,
@@ -821,7 +905,7 @@ async def update_log(
     )
     await db.commit()
 
-    return LogItemOut(
+    return LogDetailOut(
         id=log.id,
         customer_id=log.customer_id,
         consultant_id=current_user.id,

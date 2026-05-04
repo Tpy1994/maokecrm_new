@@ -6,7 +6,24 @@ import { api } from '../../api/client'
 
 interface Badge { consultant_id: string; consultant_name: string; is_me: boolean }
 interface CTag { id: string; name: string; color: string }
-interface CProduct { product_id: string; product_name: string; is_refunded: boolean }
+type CourseStatusKey =
+  | 'purchased_not_started'
+  | 'sales_marked_completed'
+  | 'purchased_not_started_refunded'
+  | 'sales_marked_completed_refunded'
+  | 'admin_marked_completed'
+  | 'admin_marked_completed_refunded'
+
+const COURSE_STATUS_META: Record<CourseStatusKey, { label: string; bg: string; color: string; border: string }> = {
+  purchased_not_started: { label: '已购未上', bg: '#FDECEC', color: '#B42318', border: '#F7CACA' },
+  sales_marked_completed: { label: '销售标记已上', bg: '#EAF8EE', color: '#166534', border: '#BFE7CB' },
+  admin_marked_completed: { label: '管理员销课已上（扣结余）', bg: '#EAF2FF', color: '#1D4ED8', border: '#BFDBFE' },
+  purchased_not_started_refunded: { label: '已购未上+退款', bg: '#FDECEC', color: '#B42318', border: '#F7CACA' },
+  sales_marked_completed_refunded: { label: '销售标记已上+退款', bg: '#EAF8EE', color: '#166534', border: '#BFE7CB' },
+  admin_marked_completed_refunded: { label: '管理员销课+退款', bg: '#EAF2FF', color: '#1D4ED8', border: '#BFDBFE' },
+}
+
+interface CProduct { product_id: string; product_name: string; is_refunded: boolean; status?: string | null }
 interface TagOption { id: string; name: string; color: string; category_name: string }
 interface RowItem {
   relation_id: string
@@ -219,22 +236,29 @@ export default function ConsultantCustomersPage() {
       render: (_: unknown, r: RowItem) => (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4, alignItems: 'flex-start' }}>
           {r.products.map((p) => (
-            <Tag
-              key={p.product_id}
-              style={{
-                marginInlineEnd: 0,
-                alignSelf: 'flex-start',
-                textDecoration: p.is_refunded ? 'line-through' : 'none',
-                color: p.is_refunded ? '#B42318' : '#166534',
-                borderColor: p.is_refunded ? '#F7CACA' : '#BFE7CB',
-                background: p.is_refunded ? '#FDECEC' : '#EAF8EE',
-                paddingInline: 8,
-                lineHeight: '18px',
-                fontSize: 11,
-              }}
-            >
-              {p.product_name}
-            </Tag>
+            (() => {
+              const key = (p.status || (p.is_refunded ? 'purchased_not_started_refunded' : 'purchased_not_started')) as CourseStatusKey
+              const meta = COURSE_STATUS_META[key] || COURSE_STATUS_META.purchased_not_started
+              const isRefunded = key.includes('refunded')
+              return (
+                <Tag
+                  key={`${p.product_id}:${p.product_name}:${key}`}
+                  style={{
+                    marginInlineEnd: 0,
+                    alignSelf: 'flex-start',
+                    textDecoration: isRefunded ? 'line-through' : 'none',
+                    color: meta.color,
+                    borderColor: meta.border,
+                    background: meta.bg,
+                    paddingInline: 8,
+                    lineHeight: '18px',
+                    fontSize: 11,
+                  }}
+                >
+                  {p.product_name}
+                </Tag>
+              )
+            })()
           ))}
         </div>
       ),
