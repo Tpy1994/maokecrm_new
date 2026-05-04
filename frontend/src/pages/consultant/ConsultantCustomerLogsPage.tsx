@@ -14,9 +14,12 @@ interface LogItem {
   log_date: string
   duration: number
   summary: string | null
-  content: string | null
   created_at: string
   updated_at: string
+}
+
+interface LogDetailItem extends LogItem {
+  content: string | null
 }
 
 interface DetailItem {
@@ -72,7 +75,9 @@ export default function ConsultantCustomerLogsPage() {
     }
   }
 
-  useEffect(() => { if (customerId) void fetchLogs(1) }, [customerId, mineOnly])
+  useEffect(() => {
+    if (customerId) void fetchLogs(1)
+  }, [customerId, mineOnly, dateRange])
 
   const submit = async () => {
     const v = await form.validateFields()
@@ -105,7 +110,7 @@ export default function ConsultantCustomerLogsPage() {
           summary: d.summary ?? '',
           content: d.content ?? '',
         })
-        message.info('已恢复上次未提交草稿')
+        message.info('已恢复上次草稿')
       } catch {
         form.setFieldsValue({ log_date: dayjs(), duration: 30, summary: '', content: '' })
       }
@@ -117,13 +122,13 @@ export default function ConsultantCustomerLogsPage() {
 
   return (
     <div>
-      <div className="page-header">
+      <div className='page-header'>
         <div>
           <h2>客户咨询详情</h2>
-          <p className="page-subtitle">按时间倒序展示，咨询师可编辑自己的记录</p>
+          <p className='page-subtitle'>按时间倒序展示，咨询师可编辑自己的记录</p>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
-          <Button type="primary" onClick={openCreateModal}>新增日志</Button>
+          <Button type='primary' onClick={openCreateModal}>新增日志</Button>
           <Button onClick={() => navigate('/consultant/customers')}>返回</Button>
         </div>
       </div>
@@ -163,20 +168,22 @@ export default function ConsultantCustomerLogsPage() {
         </div>
       ) : null}
 
-      <div style={{ marginBottom: 10, display: 'grid', gridTemplateColumns: '1fr 260px 120px 120px', gap: 8, alignItems: 'center' }}>
+      <div style={{ marginBottom: 10, display: 'grid', gridTemplateColumns: '1fr 260px 120px', gap: 8, alignItems: 'center' }}>
         <Input.Search
           allowClear
           value={keyword}
-          placeholder='搜索摘要/内容'
+          placeholder='搜索摘要'
           onChange={(e) => setKeyword(e.target.value)}
           onSearch={() => { setPage(1); void fetchLogs(1) }}
         />
         <DatePicker.RangePicker
           value={dateRange}
-          onChange={(v) => setDateRange([v?.[0] ?? null, v?.[1] ?? null])}
+          onChange={(v) => {
+            setPage(1)
+            setDateRange([v?.[0] ?? null, v?.[1] ?? null])
+          }}
           style={{ width: '100%' }}
         />
-        <Button onClick={() => { setPage(1); void fetchLogs(1) }}>应用筛选</Button>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'flex-end' }}>
           <span style={{ fontSize: 12, color: '#8c8c8c' }}>只看我的</span>
           <Switch checked={mineOnly} onChange={(v) => { setMineOnly(v); setPage(1) }} />
@@ -187,43 +194,36 @@ export default function ConsultantCustomerLogsPage() {
         {loading ? '加载中...' : logs.length === 0 ? (
           <div style={{ color: '#8c8c8c' }}>还没有咨询日志，先新增一条。</div>
         ) : logs.map((l) => (
-          <div
-            key={l.id}
-            style={{
-              border: '1px solid #ecebe6',
-              borderRadius: 12,
-              padding: 14,
-              marginBottom: 10,
-              background: '#fff',
-            }}
-          >
+          <div key={l.id} style={{ border: '1px solid #ecebe6', borderRadius: 12, padding: 14, marginBottom: 10, background: '#fff' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-                {l.is_me && (
-                  <span style={{ background: '#eaf8ee', color: '#166534', border: '1px solid #bfe7cb', borderRadius: 10, padding: '0 8px', fontSize: 11, lineHeight: '20px', fontWeight: 600 }}>
-                    最新
-                  </span>
-                )}
-                <strong style={{ fontSize: 18 }}>
-                  第 {Math.max((detail?.consultation_count || logs.length) - logs.findIndex((it) => it.id === l.id), 1)} 次咨询
-                </strong>
+                {l.is_me && <span style={{ background: '#eaf8ee', color: '#166534', border: '1px solid #bfe7cb', borderRadius: 10, padding: '0 8px', fontSize: 11, lineHeight: '20px', fontWeight: 600 }}>最新</span>}
+                <strong style={{ fontSize: 18 }}>第 {Math.max((detail?.consultation_count || logs.length) - logs.findIndex((it) => it.id === l.id), 1)} 次咨询</strong>
                 <span style={{ color: '#8c8c8c', fontSize: 13 }}>{dayjs(l.log_date).format('M/D')} · {l.duration / 60 >= 1 ? `${(l.duration / 60).toFixed(1)}小时` : `${l.duration}分钟`}</span>
                 <span style={{ background: '#f2f4f7', color: '#344054', borderRadius: 10, padding: '0 8px', fontSize: 11, lineHeight: '20px' }}>
                   {l.consultant_name}{l.is_me ? '（我）' : ''}
                 </span>
               </div>
               {l.editable ? (
-                <Button size="small" onClick={() => { setEditing(l); form.setFieldsValue({ log_date: dayjs(l.log_date), duration: l.duration, summary: l.summary, content: l.content }); setOpen(true) }}>
+                <Button
+                  size='small'
+                  onClick={async () => {
+                    const logDetail = await api.get<LogDetailItem>(`/consultant/logs/${l.id}`)
+                    setEditing(l)
+                    form.setFieldsValue({
+                      log_date: dayjs(logDetail.log_date),
+                      duration: logDetail.duration,
+                      summary: logDetail.summary,
+                      content: logDetail.content,
+                    })
+                    setOpen(true)
+                  }}
+                >
                   编辑
                 </Button>
-              ) : (
-                <Button size="small" disabled>
-                  查看
-                </Button>
-              )}
+              ) : <Button size='small' disabled>查看</Button>}
             </div>
-            <div style={{ marginTop: 10, color: '#1f2937', lineHeight: 1.7 }}>{l.summary || '—'}</div>
-            {l.content ? <div style={{ marginTop: 6, color: '#4b5563', whiteSpace: 'pre-wrap', lineHeight: 1.7 }}>{l.content}</div> : null}
+            <div style={{ marginTop: 10, color: '#1f2937', lineHeight: 1.7 }}>{l.summary || '-'}</div>
             <div style={{ marginTop: 8, color: '#9ca3af', fontSize: 12 }}>更新于 {dayjs(l.updated_at).format('M/D HH:mm')}</div>
           </div>
         ))}
@@ -242,7 +242,7 @@ export default function ConsultantCustomerLogsPage() {
       <Modal title={editing ? '编辑日志' : '新增日志'} open={open} onOk={submit} onCancel={() => { setOpen(false); setEditing(null) }} destroyOnClose>
         <Form
           form={form}
-          layout="vertical"
+          layout='vertical'
           onValuesChange={() => {
             if (editing) return
             const values = form.getFieldsValue()
@@ -255,37 +255,31 @@ export default function ConsultantCustomerLogsPage() {
             localStorage.setItem(draftKey, JSON.stringify(draft))
           }}
         >
-          <Form.Item name="log_date" label="日期" rules={[{ required: true }]}>
+          <Form.Item name='log_date' label='日期' rules={[{ required: true }]}>
             <DatePicker style={{ width: '100%' }} />
           </Form.Item>
-          <Form.Item name="duration" label="时长（分钟）" rules={[{ required: true }]}>
+          <Form.Item name='duration' label='时长（分钟）' rules={[{ required: true }]}>
             <InputNumber min={1} style={{ width: '100%' }} />
           </Form.Item>
           <div style={{ marginTop: -4, marginBottom: 10, display: 'flex', gap: 8 }}>
-            {[15, 30, 45, 60].map((m) => (
-              <Button key={m} size='small' onClick={() => form.setFieldValue('duration', m)}>{m}分钟</Button>
-            ))}
+            {[15, 30, 45, 60].map((m) => <Button key={m} size='small' onClick={() => form.setFieldValue('duration', m)}>{m}分钟</Button>)}
           </div>
-          <Form.Item name="summary" label="摘要" rules={[{ max: 60, message: '摘要最多 60 字' }]}>
+          <Form.Item name='summary' label='摘要' rules={[{ max: 60, message: '摘要最多 60 字' }]}>
             <Input />
           </Form.Item>
           <Form.Item
-            name="content"
-            label="内容"
-            rules={[
-              {
-                validator: async (_, value: string | undefined) => {
-                  const text = (value || '').trim()
-                  if (text.length > 0 && text.length < 10) throw new Error('内容至少 10 字，或留空')
-                },
+            name='content'
+            label='内容'
+            rules={[{
+              validator: async (_, value: string | undefined) => {
+                const text = (value || '').trim()
+                if (text.length > 0 && text.length < 10) throw new Error('内容至少 10 字，或留空')
               },
-            ]}
+            }]}
           >
             <Input.TextArea rows={5} />
           </Form.Item>
-          <div style={{ color: '#8c8c8c', fontSize: 12, marginTop: -6 }}>
-            支持草稿暂存：未提交关闭后，下次新增日志会自动恢复。
-          </div>
+          <div style={{ color: '#8c8c8c', fontSize: 12, marginTop: -6 }}>支持草稿暂存：未提交关闭后，下次新增日志会自动恢复。</div>
         </Form>
       </Modal>
     </div>

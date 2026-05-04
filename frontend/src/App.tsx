@@ -17,6 +17,7 @@ import AdminTuitionAndWriteoffPage from './pages/admin/AdminTuitionAndWriteoffPa
 import AdminAuditLogsPage from './pages/admin/AdminAuditLogsPage'
 import CustomerList from './pages/sales/CustomerList'
 import DataReview from './pages/sales/DataReview'
+import SalesCustomerLogsPage from './pages/sales/SalesCustomerLogsPage'
 import ConsultantCustomersPage from './pages/consultant/ConsultantCustomersPage'
 import ConsultantDataReviewPage from './pages/consultant/ConsultantDataReviewPage'
 import ConsultantPoolPage from './pages/consultant/ConsultantPoolPage'
@@ -32,6 +33,7 @@ export default function App() {
           <Route element={<ProtectedRoute allowedRoles={['sales']} />}>
             <Route element={<SalesLayout />}>
               <Route path="/sales/customers" element={<CustomerList />} />
+              <Route path="/sales/customers/:customerId/logs" element={<SalesCustomerLogsPage />} />
               <Route path="/sales/data-review" element={<DataReview />} />
             </Route>
           </Route>
