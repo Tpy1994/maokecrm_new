@@ -300,7 +300,6 @@ export default function CustomerList() {
         )
       }
     },
-    { title: '咨询池', width: 70, render: (_: unknown, r: Customer) => (r.in_consultation_pool ? <Tag color='green' style={{ fontSize: 10, lineHeight: '14px' }}>是</Tag> : <Tag style={{ fontSize: 10, lineHeight: '14px' }}>否</Tag>) },
     { title: '咨询次数', width: 80, render: (_: unknown, r: Customer) => <Select size='small' value={r.consultation_count ?? undefined} style={{ width: 60 }} placeholder='—' disabled={r.consultation_count === null} options={Array.from({ length: 21 }, (_, i) => ({ value: i, label: `${i}` }))} onChange={async (val) => { await api.put(`/sales/customers/${r.id}`, { consultation_count: val }); fetchCustomers() }} /> },
     { title: '绑定微信', width: 90, dataIndex: 'link_account_name', render: (v: string | null) => <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }}>{v || '-'}</span> },
   ]
