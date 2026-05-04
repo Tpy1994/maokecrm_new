@@ -1,5 +1,5 @@
 ﻿import { useEffect, useMemo, useState } from 'react'
-import { Button, Input, InputNumber, Modal, Select, Table, Tag, Tooltip, message } from 'antd'
+import { Button, Input, InputNumber, Modal, Select, Table, Tag, message } from 'antd'
 import { api } from '../../api/client'
 
 interface CourseItem {
@@ -7,6 +7,7 @@ interface CourseItem {
   product_id?: string
   product_name: string
   amount_paid: number
+  refunded_amount: number
   status: string
   created_at: string
 }
@@ -81,6 +82,9 @@ export default function AdminTuitionAndWriteoffPage() {
   const [products, setProducts] = useState<ProductOption[]>([])
   const [writeoffOpen, setWriteoffOpen] = useState(false)
   const [writeoffForm, setWriteoffForm] = useState({ product_id: '', amount_yuan: 0, note: '' })
+  const [activeCourseKey, setActiveCourseKey] = useState<string | null>(null)
+  const [refundTarget, setRefundTarget] = useState<{ customerId: string; enrollmentId: string; maxRefund: number } | null>(null)
+  const [refundAmountYuan, setRefundAmountYuan] = useState<number>(0)
   const [refundingId, setRefundingId] = useState<string | null>(null)
 
   const [rows, setRows] = useState<TuitionGiftRequestItem[]>([])
@@ -138,11 +142,28 @@ export default function AdminTuitionAndWriteoffPage() {
     fetchSummary()
   }
 
-  const refundCourse = async (customerId: string, enrollmentId: string) => {
+  const refundCourse = async (customerId: string, enrollmentId: string, refundAmountCents: number) => {
     setRefundingId(enrollmentId)
     try {
-      await api.put(`/admin/customers/${customerId}/courses/${enrollmentId}/status`, { status: 'admin_marked_completed_refunded' })
+      await api.put(`/admin/customers/${customerId}/courses/${enrollmentId}/status`, {
+        status: 'admin_marked_completed_refunded',
+        refund_amount: refundAmountCents,
+      })
       message.success('已退款')
+      await fetchCustomers()
+      await fetchSummary()
+    } finally {
+      setRefundingId(null)
+    }
+  }
+
+  const revertRefundCourse = async (customerId: string, enrollmentId: string) => {
+    setRefundingId(enrollmentId)
+    try {
+      await api.put(`/admin/customers/${customerId}/courses/${enrollmentId}/status`, {
+        status: 'admin_marked_completed',
+      })
+      message.success('已撤销退款')
       await fetchCustomers()
       await fetchSummary()
     } finally {
@@ -153,6 +174,24 @@ export default function AdminTuitionAndWriteoffPage() {
   useEffect(() => { void fetchRows() }, [activeStatus])
   useEffect(() => { void fetchProducts(); void fetchSummary() }, [])
   useEffect(() => { void fetchCustomers() }, [writeoffKeyword])
+  useEffect(() => {
+    const onDocMouseDown = (evt: MouseEvent) => {
+      if (refundTarget) return
+      if (!activeCourseKey) return
+      const target = evt.target as HTMLElement | null
+      if (target && target.closest('[data-admin-course-op]')) return
+      setActiveCourseKey(null)
+    }
+    const onEsc = (evt: KeyboardEvent) => {
+      if (evt.key === 'Escape') setActiveCourseKey(null)
+    }
+    document.addEventListener('mousedown', onDocMouseDown)
+    document.addEventListener('keydown', onEsc)
+    return () => {
+      document.removeEventListener('mousedown', onDocMouseDown)
+      document.removeEventListener('keydown', onEsc)
+    }
+  }, [activeCourseKey, refundTarget])
 
   const filtered = useMemo(() => {
     const k = reviewKeyword.trim().toLowerCase()
@@ -291,15 +330,19 @@ export default function AdminTuitionAndWriteoffPage() {
               render: (_: unknown, c: CustomerItem) => (
                 <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                   {c.courses.length ? c.courses.map((course) => (
-                    <span key={course.enrollment_id} style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                      {(() => {
-                        const meta = COURSE_STATUS_META[course.status as CourseStatusKey]
-                        return (
-                          <span
+                    (() => {
+                      const courseKey = `${c.customer_id}:${course.enrollment_id}`
+                      const meta = COURSE_STATUS_META[course.status as CourseStatusKey]
+                      const isActive = activeCourseKey === courseKey
+                      const maxRefund = Math.max(course.amount_paid - (course.refunded_amount || 0), 0)
+                      return (
+                        <div key={course.enrollment_id} data-admin-course-op style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 4 }}>
+                          <button
+                            onClick={() => setActiveCourseKey((curr) => (curr === courseKey ? null : courseKey))}
                             style={{
                               display: 'inline-flex',
                               alignItems: 'center',
-                              border: `1px solid ${meta?.border || '#d9d9d9'}`,
+                              border: `1px solid ${isActive ? '#3B82F6' : (meta?.border || '#d9d9d9')}`,
                               background: meta?.bg || '#f5f5f5',
                               color: meta?.color || '#595959',
                               borderRadius: 4,
@@ -307,36 +350,52 @@ export default function AdminTuitionAndWriteoffPage() {
                               fontSize: 11,
                               lineHeight: '16px',
                               maxWidth: 180,
+                              cursor: 'pointer',
                             }}
                           >
                             <span style={{ textDecoration: course.status.includes('refunded') ? 'line-through' : 'none', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                               {course.product_name}
                             </span>
-                          </span>
-                        )
-                      })()}
-                      {course.status === 'admin_marked_completed' ? (
-                        <Tooltip title="退款">
-                          <button
-                            disabled={refundingId === course.enrollment_id}
-                            onClick={() => void refundCourse(c.customer_id, course.enrollment_id)}
-                            style={{
-                              border: 'none',
-                              background: 'none',
-                              cursor: refundingId === course.enrollment_id ? 'not-allowed' : 'pointer',
-                              color: '#1d4ed8',
-                              opacity: refundingId === course.enrollment_id ? 0.4 : 0.7,
-                              padding: 0,
-                              marginLeft: 2,
-                              fontSize: 11,
-                              lineHeight: '14px',
-                            }}
-                          >
-                            ×
                           </button>
-                        </Tooltip>
-                      ) : null}
-                    </span>
+                          {isActive ? (
+                            <div style={{ border: '1px solid #e5e7eb', background: '#fafafa', borderRadius: 6, padding: '5px 6px', width: '100%' }}>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                                <span style={{ fontSize: 10, color: '#6b7280' }}>操作区</span>
+                                <button onClick={() => setActiveCourseKey(null)} style={{ border: 'none', background: 'transparent', color: '#9ca3af', cursor: 'pointer', fontSize: 12, lineHeight: 1 }}>×</button>
+                              </div>
+                              <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                                {course.status === 'admin_marked_completed' || course.status === 'admin_marked_completed_refunded' ? (
+                                  <>
+                                    {maxRefund > 0 ? (
+                                      <button
+                                        disabled={refundingId === course.enrollment_id}
+                                        onClick={() => {
+                                          setRefundTarget({ customerId: c.customer_id, enrollmentId: course.enrollment_id, maxRefund })
+                                          setRefundAmountYuan(Number((maxRefund / 100).toFixed(2)))
+                                        }}
+                                        style={{ border: '1px solid #bfdbfe', background: '#eff6ff', color: '#1d4ed8', borderRadius: 4, fontSize: 10, padding: '0 6px', cursor: 'pointer' }}
+                                      >
+                                        退款
+                                      </button>
+                                    ) : null}
+                                    {course.status === 'admin_marked_completed_refunded' ? (
+                                      <button
+                                        disabled={refundingId === course.enrollment_id}
+                                        onClick={() => { void revertRefundCourse(c.customer_id, course.enrollment_id) }}
+                                        style={{ border: '1px solid #bfdbfe', background: '#eff6ff', color: '#1d4ed8', borderRadius: 4, fontSize: 10, padding: '0 6px', cursor: 'pointer' }}
+                                      >
+                                        撤销退款
+                                      </button>
+                                    ) : null}
+                                  </>
+                                ) : null}
+                                <span style={{ fontSize: 10, color: '#6b7280' }}>{y2f(course.amount_paid)} / 已退 {y2f(course.refunded_amount || 0)}</span>
+                              </div>
+                            </div>
+                          ) : null}
+                        </div>
+                      )
+                    })()
                   )) : <span style={{ color: '#9ca3af' }}>-</span>}
                 </div>
               ),
@@ -440,6 +499,39 @@ export default function AdminTuitionAndWriteoffPage() {
             onChange={(e) => setWriteoffForm((prev) => ({ ...prev, note: e.target.value }))}
             placeholder='备注（可选）'
           />
+        </div>
+      </Modal>
+
+      <Modal
+        title='销课退款'
+        open={!!refundTarget}
+        confirmLoading={refundingId !== null}
+        onOk={async () => {
+          if (!refundTarget) return
+          const refundCents = Math.round(refundAmountYuan * 100)
+          if (refundCents <= 0) {
+            message.error('请输入退款金额')
+            return
+          }
+          if (refundCents > refundTarget.maxRefund) {
+            message.error('退款金额不能超过可退金额')
+            return
+          }
+          await refundCourse(refundTarget.customerId, refundTarget.enrollmentId, refundCents)
+          setRefundTarget(null)
+        }}
+        onCancel={() => setRefundTarget(null)}
+      >
+        <InputNumber
+          min={0.01}
+          precision={2}
+          style={{ width: '100%' }}
+          addonBefore='退款金额(元)'
+          value={refundAmountYuan}
+          onChange={(v) => setRefundAmountYuan(Number(v || 0))}
+        />
+        <div style={{ color: '#6b7280', fontSize: 12, marginTop: 8 }}>
+          最多可退：{refundTarget ? y2f(refundTarget.maxRefund) : '¥0.00'}
         </div>
       </Modal>
 

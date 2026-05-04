@@ -84,6 +84,7 @@ class AdminDashboardOut(BaseModel):
 
 class AdminCourseStatusUpdateIn(BaseModel):
     status: str
+    refund_amount: int | None = None
 
 
 class TuitionGiftRequestOut(BaseModel):
@@ -115,6 +116,7 @@ class AdminWriteoffCourseOut(BaseModel):
     enrollment_id: str
     product_name: str
     amount_paid: int
+    refunded_amount: int
     status: str
     created_at: str
 
@@ -174,6 +176,7 @@ ADMIN_COURSE_STATUSES = {
 AUDIT_ACTIONS = {
     "admin_writeoff_course_created",
     "admin_writeoff_course_refunded",
+    "admin_writeoff_course_refund_reverted",
     "gift_request_approved",
     "gift_request_rejected",
 }
@@ -409,8 +412,9 @@ async def list_tuition_writeoff_customers(
         latest_pending_note = pending_requests[0].sales_note if pending_requests else None
 
         course_r = await db.execute(
-            select(CustomerCourseEnrollment, Product)
+            select(CustomerCourseEnrollment, Product, Order)
             .join(Product, Product.id == CustomerCourseEnrollment.product_id)
+            .join(Order, Order.id == CustomerCourseEnrollment.order_id)
             .where(CustomerCourseEnrollment.customer_id == c.id)
             .order_by(CustomerCourseEnrollment.created_at.desc())
         )
@@ -419,10 +423,11 @@ async def list_tuition_writeoff_customers(
                 enrollment_id=e.id,
                 product_name=p.name,
                 amount_paid=e.amount_paid,
+                refunded_amount=int(o.refund_total or 0),
                 status=e.status,
                 created_at=e.created_at.isoformat(),
             )
-            for e, p in course_r.all()
+            for e, p, o in course_r.all()
         ]
 
         out.append(
@@ -618,7 +623,7 @@ async def update_admin_course_status(
     current_user: User = Depends(require_role("admin")),
 ):
     if body.status not in ADMIN_COURSE_STATUSES:
-        raise HTTPException(400, "管理员仅可设置后2种状态")
+        raise HTTPException(400, "????????2???")
 
     row = await db.execute(
         select(CustomerCourseEnrollment).where(
@@ -628,21 +633,27 @@ async def update_admin_course_status(
     )
     enrollment = row.scalar_one_or_none()
     if enrollment is None:
-        raise HTTPException(404, "课程记录不存在")
+        raise HTTPException(404, "???????")
 
     order_r = await db.execute(select(Order).where(Order.id == enrollment.order_id))
     order = order_r.scalar_one_or_none()
     if order is None:
-        raise HTTPException(404, "订单不存在")
+        raise HTTPException(404, "?????")
 
     if body.status == enrollment.status:
         return {"message": "ok"}
-    if enrollment.status == "admin_marked_completed_refunded" and body.status != "admin_marked_completed_refunded":
-        raise HTTPException(400, "已退款课程不支持回退状态")
 
     now = datetime.utcnow()
     if body.status == "admin_marked_completed_refunded":
-        refund_amount = int(order.amount or enrollment.amount_paid or 0)
+        order_amount = int(order.amount or enrollment.amount_paid or 0)
+        current_refund = int(order.refund_total or 0)
+        max_refund = max(0, order_amount - current_refund)
+        refund_amount = int(body.refund_amount if body.refund_amount is not None else max_refund)
+        if refund_amount <= 0:
+            raise HTTPException(400, "????????0")
+        if refund_amount > max_refund:
+            raise HTTPException(400, "????????????")
+
         enrollment.status = body.status
         enrollment.status_updated_by = current_user.id
         enrollment.status_updated_role = "admin"
@@ -652,7 +663,7 @@ async def update_admin_course_status(
 
         order.status = "refunded"
         order.refunded_at = now
-        order.refund_total = refund_amount
+        order.refund_total = current_refund + refund_amount
         order.updated_at = now
 
         cp_r = await db.execute(
@@ -675,7 +686,45 @@ async def update_admin_course_status(
                 amount_delta=-refund_amount,
                 operator_user_id=current_user.id,
                 operator_role="admin",
-                note="管理员销课退款",
+                note="???????",
+            )
+        )
+    else:
+        revert_amount = int(order.refund_total or 0)
+
+        enrollment.status = "admin_marked_completed"
+        enrollment.status_updated_by = current_user.id
+        enrollment.status_updated_role = "admin"
+        enrollment.status_updated_at = now
+        enrollment.refunded_at = None
+        enrollment.updated_at = now
+
+        order.status = "active"
+        order.refunded_at = None
+        order.refund_total = 0
+        order.updated_at = now
+
+        cp_r = await db.execute(
+            select(CustomerProduct).where(
+                CustomerProduct.order_id == order.id,
+                CustomerProduct.customer_id == customer_id,
+                CustomerProduct.product_id == enrollment.product_id,
+            )
+        )
+        customer_product = cp_r.scalar_one_or_none()
+        if customer_product is not None:
+            customer_product.is_refunded = False
+
+        db.add(
+            AuditLog(
+                resource_type="course_enrollment",
+                resource_id=order.id,
+                customer_id=customer_id,
+                action="admin_writeoff_course_refund_reverted",
+                amount_delta=revert_amount,
+                operator_user_id=current_user.id,
+                operator_role="admin",
+                note="?????????",
             )
         )
 
