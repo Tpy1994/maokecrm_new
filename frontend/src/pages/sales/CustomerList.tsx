@@ -81,6 +81,11 @@ export default function CustomerList() {
   const [selectedProductId, setSelectedProductId] = useState<string | null>(null)
   const [newCourseAmount, setNewCourseAmount] = useState<number | null>(null)
   const [activeCourseKey, setActiveCourseKey] = useState<string | null>(null)
+  const [courseActionLoadingKey, setCourseActionLoadingKey] = useState<string | null>(null)
+  const [editingAmountCourse, setEditingAmountCourse] = useState<{ customerId: string; enrollmentId: string; amountPaid: number } | null>(null)
+  const [editingRefundCourse, setEditingRefundCourse] = useState<{ customerId: string; enrollmentId: string; maxRefund: number } | null>(null)
+  const [amountForm] = Form.useForm<{ amount_yuan: number }>()
+  const [refundForm] = Form.useForm<{ refund_yuan: number }>()
 
   const [selectedStatusFilter, setSelectedStatusFilter] = useState<CourseStatusKey>('purchased_not_started')
 
@@ -168,26 +173,50 @@ export default function CustomerList() {
 
   const updateCourseStatus = async (customerId: string, enrollmentId: string, status: CourseStatusKey) => {
     if (!salesStatusSet.has(status)) return
-    await api.put(`/sales/customers/${customerId}/courses/${enrollmentId}/status`, { status })
-    fetchCustomers()
+    const actionKey = `${customerId}:${enrollmentId}:status`
+    setCourseActionLoadingKey(actionKey)
+    try {
+      await api.put(`/sales/customers/${customerId}/courses/${enrollmentId}/status`, { status })
+      await fetchCustomers()
+    } finally {
+      setCourseActionLoadingKey(null)
+    }
   }
 
   const updateCourseAmount = async (customerId: string, enrollmentId: string, amountPaid: number) => {
-    await api.put(`/sales/customers/${customerId}/courses/${enrollmentId}/amount`, { amount_paid: amountPaid })
-    message.success('课程实付金额已更新')
-    fetchCustomers()
+    const actionKey = `${customerId}:${enrollmentId}:amount`
+    setCourseActionLoadingKey(actionKey)
+    try {
+      await api.put(`/sales/customers/${customerId}/courses/${enrollmentId}/amount`, { amount_paid: amountPaid })
+      message.success('课程实付金额已更新')
+      await fetchCustomers()
+    } finally {
+      setCourseActionLoadingKey(null)
+    }
   }
 
   const refundCourse = async (customerId: string, enrollmentId: string, amount: number) => {
-    await api.post(`/sales/customers/${customerId}/courses/${enrollmentId}/refund`, { refund_amount: amount })
-    message.success('退款成功')
-    fetchCustomers()
+    const actionKey = `${customerId}:${enrollmentId}:refund`
+    setCourseActionLoadingKey(actionKey)
+    try {
+      await api.post(`/sales/customers/${customerId}/courses/${enrollmentId}/refund`, { refund_amount: amount })
+      message.success('退款成功')
+      await fetchCustomers()
+    } finally {
+      setCourseActionLoadingKey(null)
+    }
   }
 
   const revertRefundCourse = async (customerId: string, enrollmentId: string) => {
-    await api.post(`/sales/customers/${customerId}/courses/${enrollmentId}/refund/revert`, {})
-    message.success('已撤销退款')
-    fetchCustomers()
+    const actionKey = `${customerId}:${enrollmentId}:revert`
+    setCourseActionLoadingKey(actionKey)
+    try {
+      await api.post(`/sales/customers/${customerId}/courses/${enrollmentId}/refund/revert`, {})
+      message.success('已撤销退款')
+      await fetchCustomers()
+    } finally {
+      setCourseActionLoadingKey(null)
+    }
   }
 
   const columns = [
@@ -215,12 +244,13 @@ export default function CustomerList() {
             const isRefunded = c.status.includes('refunded')
             const courseKey = `${r.id}:${c.enrollment_id}`
             const isActive = activeCourseKey === courseKey
+            const maxRefund = Math.max(c.amount_paid - c.refunded_amount, 0)
             return (
               <div key={c.enrollment_id} style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 4 }}>
                 <button
                   onClick={() => {
                     setActiveCourseKey(courseKey)
-                    updateCourseStatus(r.id, c.enrollment_id, selectedStatusFilter)
+                    void updateCourseStatus(r.id, c.enrollment_id, selectedStatusFilter)
                   }}
                   style={{
                     border: `1px solid ${isActive ? '#3B82F6' : (meta?.border || '#d9d9d9')}`,
@@ -243,27 +273,24 @@ export default function CustomerList() {
                 {isActive ? (
                   <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
                     <button
-                      onClick={async () => {
-                        const nextValue = window.prompt('请输入实付金额（元）', `${(c.amount_paid / 100).toFixed(2)}`)
-                        if (nextValue === null) return
-                        const parsed = Number(nextValue)
-                        if (Number.isNaN(parsed) || parsed < 0) { message.error('金额格式错误'); return }
-                        await updateCourseAmount(r.id, c.enrollment_id, Math.round(parsed * 100))
+                      disabled={courseActionLoadingKey !== null}
+                      onClick={() => {
+                        setEditingAmountCourse({ customerId: r.id, enrollmentId: c.enrollment_id, amountPaid: c.amount_paid })
+                        amountForm.setFieldsValue({ amount_yuan: Number((c.amount_paid / 100).toFixed(2)) })
                       }}
                       style={{ border: '1px solid #d9d9d9', background: '#fff', borderRadius: 4, fontSize: 10, padding: '0 6px', cursor: 'pointer' }}
                     >改价</button>
                     <button
-                      onClick={async () => {
-                        const nextValue = window.prompt('请输入退款金额（元）', `${Math.max((c.amount_paid - c.refunded_amount) / 100, 0)}`)
-                        if (nextValue === null) return
-                        const parsed = Number(nextValue)
-                        if (Number.isNaN(parsed) || parsed <= 0) { message.error('退款金额必须大于0'); return }
-                        await refundCourse(r.id, c.enrollment_id, Math.round(parsed * 100))
+                      disabled={isRefunded || maxRefund <= 0 || courseActionLoadingKey !== null}
+                      onClick={() => {
+                        setEditingRefundCourse({ customerId: r.id, enrollmentId: c.enrollment_id, maxRefund })
+                        refundForm.setFieldsValue({ refund_yuan: Number((maxRefund / 100).toFixed(2)) })
                       }}
                       style={{ border: '1px solid #fecaca', background: '#fff1f2', color: '#b91c1c', borderRadius: 4, fontSize: 10, padding: '0 6px', cursor: 'pointer' }}
                     >退款</button>
                     <button
-                      onClick={() => revertRefundCourse(r.id, c.enrollment_id)}
+                      disabled={!isRefunded || courseActionLoadingKey !== null}
+                      onClick={() => void revertRefundCourse(r.id, c.enrollment_id)}
                       style={{ border: '1px solid #bfdbfe', background: '#eff6ff', color: '#1d4ed8', borderRadius: 4, fontSize: 10, padding: '0 6px', cursor: 'pointer' }}
                     >撤销退款</button>
                     <span style={{ fontSize: 10, color: '#6b7280' }}>{y2f(c.amount_paid)} / 已退 {y2f(c.refunded_amount)}</span>
@@ -482,6 +509,54 @@ export default function CustomerList() {
           onChange={(v) => setNewCourseAmount(v === null ? null : Math.round(Number(v) * 100))}
         />
         </div>
+      </Modal>
+
+      <Modal
+        title='修改实付金额'
+        open={!!editingAmountCourse}
+        confirmLoading={courseActionLoadingKey?.endsWith(':amount')}
+        onOk={async () => {
+          if (!editingAmountCourse) return
+          const values = await amountForm.validateFields()
+          await updateCourseAmount(editingAmountCourse.customerId, editingAmountCourse.enrollmentId, Math.round(values.amount_yuan * 100))
+          setEditingAmountCourse(null)
+          amountForm.resetFields()
+        }}
+        onCancel={() => { setEditingAmountCourse(null); amountForm.resetFields() }}
+      >
+        <Form form={amountForm} layout='vertical'>
+          <Form.Item name='amount_yuan' label='实付金额(元)' rules={[{ required: true, message: '请输入实付金额' }, { type: 'number', min: 0, message: '金额不能小于0' }]}>
+            <InputNumber min={0} precision={2} style={{ width: '100%' }} />
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      <Modal
+        title='课程退款'
+        open={!!editingRefundCourse}
+        confirmLoading={courseActionLoadingKey?.endsWith(':refund')}
+        onOk={async () => {
+          if (!editingRefundCourse) return
+          const values = await refundForm.validateFields()
+          const refundCents = Math.round(values.refund_yuan * 100)
+          if (refundCents > editingRefundCourse.maxRefund) {
+            message.error('退款金额不能超过可退金额')
+            return
+          }
+          await refundCourse(editingRefundCourse.customerId, editingRefundCourse.enrollmentId, refundCents)
+          setEditingRefundCourse(null)
+          refundForm.resetFields()
+        }}
+        onCancel={() => { setEditingRefundCourse(null); refundForm.resetFields() }}
+      >
+        <Form form={refundForm} layout='vertical'>
+          <Form.Item name='refund_yuan' label='退款金额(元)' rules={[{ required: true, message: '请输入退款金额' }, { type: 'number', min: 0.01, message: '退款金额必须大于0' }]}>
+            <InputNumber min={0.01} precision={2} style={{ width: '100%' }} />
+          </Form.Item>
+          <div style={{ color: '#6b7280', fontSize: 12 }}>
+            最多可退：{editingRefundCourse ? y2f(editingRefundCourse.maxRefund) : '¥0.00'}
+          </div>
+        </Form>
       </Modal>
     </div>
   )
