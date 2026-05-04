@@ -97,6 +97,13 @@ export default function ConsultantCustomersPage() {
   useEffect(() => { fetchRows('') }, [])
 
   const filtered = useMemo(() => rows, [rows])
+  const stats = useMemo(() => {
+    const totalConsultations = rows.reduce((sum, item) => sum + item.consultation_count, 0)
+    const overdueNext = rows.filter((item) => item.next_consultation_status === 'overdue').length
+    const todayNext = rows.filter((item) => item.next_consultation_status === 'today').length
+    const refundedCustomers = rows.filter((item) => item.is_refunded_customer).length
+    return { totalConsultations, overdueNext, todayNext, refundedCustomers }
+  }, [rows])
 
   const saveNote = async (customerId: string, value: string) => {
     setSavingNoteCustomerId(customerId)
@@ -155,10 +162,10 @@ export default function ConsultantCustomersPage() {
     {
       title: '客户',
       key: 'customer',
-      width: 260,
+      width: 240,
       render: (_: unknown, r: RowItem) => (
         <div>
-          <div style={{ fontWeight: 700 }}>{r.customer_name}</div>
+          <div style={{ fontWeight: 700, fontSize: 15, lineHeight: 1.2 }}>{r.customer_name}</div>
           <div style={{ color: '#8c8c8c', fontSize: 12, marginTop: 2 }}>{r.customer_info || '-'}</div>
           {r.collaborators.filter((c) => !c.is_me).length > 0 && (
             <div style={{ marginTop: 6, display: 'flex', flexWrap: 'wrap', gap: 4 }}>
@@ -187,7 +194,7 @@ export default function ConsultantCustomersPage() {
     {
       title: '标签',
       key: 'tags',
-      width: 220,
+      width: 240,
       render: (_: unknown, r: RowItem) => (
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, alignItems: 'center' }}>
           {r.tags.map((t) => (
@@ -208,13 +215,34 @@ export default function ConsultantCustomersPage() {
     {
       title: '已购课程',
       key: 'products',
-      width: 170,
-      render: (_: unknown, r: RowItem) => <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>{r.products.map(p => <Tag key={p.product_id} style={{ textDecoration: p.is_refunded ? 'line-through' : 'none', color: p.is_refunded ? '#cf1322' : '#135200', borderColor: 'transparent', background: p.is_refunded ? '#fff1f0' : '#e6fffb' }}>{p.product_name}</Tag>)}</div>,
+      width: 190,
+      render: (_: unknown, r: RowItem) => (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4, alignItems: 'flex-start' }}>
+          {r.products.map((p) => (
+            <Tag
+              key={p.product_id}
+              style={{
+                marginInlineEnd: 0,
+                alignSelf: 'flex-start',
+                textDecoration: p.is_refunded ? 'line-through' : 'none',
+                color: p.is_refunded ? '#B42318' : '#166534',
+                borderColor: p.is_refunded ? '#F7CACA' : '#BFE7CB',
+                background: p.is_refunded ? '#FDECEC' : '#EAF8EE',
+                paddingInline: 8,
+                lineHeight: '18px',
+                fontSize: 11,
+              }}
+            >
+              {p.product_name}
+            </Tag>
+          ))}
+        </div>
+      ),
     },
     {
       title: '备注',
       dataIndex: 'note',
-      width: 340,
+      width: 300,
       render: (v: string | null, r: RowItem) => {
         const isEditing = editingNoteCustomerId === r.customer_id
         const isSaving = savingNoteCustomerId === r.customer_id
@@ -277,7 +305,7 @@ export default function ConsultantCustomersPage() {
     {
       title: '下次咨询',
       dataIndex: 'next_consultation_label',
-      width: 120,
+      width: 130,
       render: (v: string, r: RowItem) => {
         const lines = v.split('\n')
         const color = r.next_consultation_status === 'overdue' ? '#a8071a' : '#003a8c'
@@ -325,7 +353,8 @@ export default function ConsultantCustomersPage() {
     {
       title: '咨询周期',
       dataIndex: 'period_label',
-      width: 120,
+      width: 130,
+      align: 'center' as const,
       render: (v: string, r: RowItem) => {
         const lines = v.split('\n')
         const color = r.period_status === 'near_expiry' ? '#d46b08' : r.period_status === 'refunded' ? '#a8071a' : '#08979c'
@@ -339,9 +368,12 @@ export default function ConsultantCustomersPage() {
                 end_date: endText && endText !== '--/--' ? dayjs(`${dayjs().year()}-${endText.replace('/', '-')}`) : null,
               })
             }}
-            style={{ border: 'none', background: 'transparent', padding: 0, textAlign: 'left', cursor: 'pointer' }}
+            style={{ border: 'none', background: 'transparent', padding: 0, textAlign: 'center', cursor: 'pointer', display: 'inline-flex', justifyContent: 'center' }}
           >
-            <div><div style={{ fontWeight: 700 }}>{lines[0]}</div><div style={{ color, fontSize: 12 }}>{lines[1] || ''}</div></div>
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', lineHeight: 1.25 }}>
+              <div style={{ fontWeight: 700 }}>{lines[0]}</div>
+              <div style={{ color, fontSize: 12, marginTop: 2 }}>{lines[1] || ''}</div>
+            </div>
           </button>
         )
       },
@@ -349,11 +381,11 @@ export default function ConsultantCustomersPage() {
     {
       title: '咨询次数',
       dataIndex: 'consultation_count',
-      width: 120,
+      width: 100,
       render: (v: number, r: RowItem) => (
         <button
           onClick={() => navigate(`/consultant/customers/${r.customer_id}/logs`)}
-          style={{ border: 'none', background: 'none', cursor: 'pointer', color: '#2563eb', fontWeight: 700, padding: 0 }}
+          style={{ border: 'none', background: '#eef4ff', cursor: 'pointer', color: '#1d4ed8', fontWeight: 700, padding: '2px 8px', borderRadius: 999, minWidth: 42 }}
         >
           {v}
         </button>
@@ -362,10 +394,10 @@ export default function ConsultantCustomersPage() {
     {
       title: '操作',
       key: 'actions',
-      width: 110,
+      width: 96,
       render: (_: unknown, r: RowItem) => (
         <Popconfirm title="确认退回咨询池？" onConfirm={() => returnToPool(r.customer_id)}>
-          <Button type="default" style={{ borderColor: '#faad14', color: '#ad6800' }}>退回咨询池</Button>
+          <Button size="small" type="default" style={{ borderColor: '#faad14', color: '#ad6800' }}>退回</Button>
         </Popconfirm>
       ),
     },
@@ -381,6 +413,25 @@ export default function ConsultantCustomersPage() {
         <Input.Search placeholder="搜索姓名/标签" style={{ width: 280 }} value={keyword} onChange={(e) => setKeyword(e.target.value)} onSearch={(v) => fetchRows(v)} />
       </div>
 
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(160px, 1fr))', gap: 10, marginBottom: 12 }}>
+        <div style={{ background: '#fff', border: '1px solid #e8e8e3', borderRadius: 10, padding: 12 }}>
+          <div style={{ color: '#8c8c8c', fontSize: 12 }}>咨询客户</div>
+          <div style={{ fontSize: 20, fontWeight: 700 }}>{rows.length}</div>
+        </div>
+        <div style={{ background: '#fff', border: '1px solid #e8e8e3', borderRadius: 10, padding: 12 }}>
+          <div style={{ color: '#8c8c8c', fontSize: 12 }}>总咨询次数</div>
+          <div style={{ fontSize: 20, fontWeight: 700 }}>{stats.totalConsultations}</div>
+        </div>
+        <div style={{ background: '#fff', border: '1px solid #e8e8e3', borderRadius: 10, padding: 12 }}>
+          <div style={{ color: '#8c8c8c', fontSize: 12 }}>今日 / 逾期</div>
+          <div style={{ fontSize: 20, fontWeight: 700 }}>{stats.todayNext} / {stats.overdueNext}</div>
+        </div>
+        <div style={{ background: '#fff', border: '1px solid #e8e8e3', borderRadius: 10, padding: 12 }}>
+          <div style={{ color: '#8c8c8c', fontSize: 12 }}>退款客户</div>
+          <div style={{ fontSize: 20, fontWeight: 700 }}>{stats.refundedCustomers}</div>
+        </div>
+      </div>
+
       <div style={{ background: '#fff', border: '1px solid #e8e8e3', borderRadius: 10, overflow: 'hidden' }}>
         <Table
           rowKey="relation_id"
@@ -388,7 +439,7 @@ export default function ConsultantCustomersPage() {
           columns={columns}
           loading={loading}
           pagination={false}
-          size="middle"
+          size="small"
           onRow={(record) => ({ style: { background: toneBg[record.row_tone] || '#fff' } })}
         />
       </div>
