@@ -1,5 +1,7 @@
 from datetime import date, datetime
+from decimal import Decimal
 
+from sqlalchemy import Column, Numeric
 from sqlmodel import Field, SQLModel
 
 from app.models.user import new_uuid, utcnow
@@ -20,7 +22,7 @@ class Customer(SQLModel, table=True):
     next_follow_up: datetime | None = Field(default=None)
     added_date: date = Field(default_factory=date.today)
     other_contact: str | None = Field(default=None, max_length=200)
-    gifted_tuition_amount: int = Field(default=0)
+    gifted_tuition_amount: Decimal = Field(default=Decimal("0.00"), sa_column=Column(Numeric(12, 2), nullable=False, server_default="0"))
 
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)

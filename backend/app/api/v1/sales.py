@@ -1,4 +1,5 @@
-﻿from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta
+from decimal import Decimal
 from sqlalchemy import text
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -38,7 +39,7 @@ class CustomerTagOut(BaseModel):
 class CustomerProductOut(BaseModel):
     product_id: str
     product_name: str
-    price: int
+    price: float
     is_refunded: bool
     order_id: str | None = None
 
@@ -47,8 +48,8 @@ class CourseEnrollmentOut(BaseModel):
     enrollment_id: str
     product_id: str
     product_name: str
-    amount_paid: int
-    refunded_amount: int
+    amount_paid: float
+    refunded_amount: float
     status: str
 
 class CustomerOut(BaseModel):
@@ -70,9 +71,9 @@ class CustomerOut(BaseModel):
     in_consultation_pool: bool
     consultation_count: int | None
     courses: list[CourseEnrollmentOut]
-    total_spent: int
-    gifted_tuition_amount: int
-    tuition_balance: int
+    total_spent: float
+    gifted_tuition_amount: float
+    tuition_balance: float
 
 class CustomerCreate(BaseModel):
     name: str = Field(max_length=50)
@@ -93,11 +94,11 @@ class CustomerUpdate(BaseModel):
     note: str | None = None
     next_follow_up: str | None = None
     consultation_count: int | None = None
-    gifted_tuition_amount: int | None = None
+    gifted_tuition_amount: float | None = None
 
 class PurchaseRequest(BaseModel):
     product_id: str
-    amount: int = Field(ge=0)
+    amount: float = Field(ge=0)
 
 class TagRequest(BaseModel):
     tag_id: str
@@ -113,15 +114,15 @@ class SalesCourseStatusUpdateIn(BaseModel):
 
 class SalesCreateCourseIn(BaseModel):
     product_id: str
-    amount: int | None = None
+    amount: float | None = None
 
 
 class SalesCourseRefundIn(BaseModel):
-    refund_amount: int = Field(ge=0)
+    refund_amount: float = Field(ge=0)
 
 
 class SalesCoursePriceUpdateIn(BaseModel):
-    amount_paid: int = Field(ge=0)
+    amount_paid: float = Field(ge=0)
 
 
 class SalesCourseRefundRevertIn(BaseModel):
@@ -130,7 +131,7 @@ class SalesCourseRefundRevertIn(BaseModel):
 
 class TuitionGiftRequestIn(BaseModel):
     customer_id: str
-    amount: int = Field(ge=1)
+    amount: float = Field(ge=0.01)
     sales_note: str | None = None
 
 
@@ -138,7 +139,7 @@ class SalesTuitionGiftRequestOut(BaseModel):
     id: str
     customer_id: str
     customer_name: str
-    amount: int
+    amount: float
     sales_note: str | None
     admin_note: str | None
     status: str
@@ -246,9 +247,9 @@ async def _build_customer_out(customer: Customer, db: AsyncSession) -> CustomerO
     total_spent_r = await db.execute(
         select(func.coalesce(func.sum(Order.amount - Order.refund_total), 0)).where(Order.customer_id == customer.id)
     )
-    total_spent = int(total_spent_r.scalar() or 0)
-    gifted = customer.gifted_tuition_amount or 0
-    tuition_balance = max(0, gifted - total_spent)
+    total_spent = Decimal(total_spent_r.scalar() or 0)
+    gifted = Decimal(customer.gifted_tuition_amount or 0)
+    tuition_balance = max(Decimal("0"), gifted - total_spent)
 
     # sales note / next follow-up stored on customers
     note = customer.sales_note
@@ -295,9 +296,9 @@ async def _build_customer_out(customer: Customer, db: AsyncSession) -> CustomerO
         in_consultation_pool=in_pool,
         consultation_count=consultation_count,
         courses=courses,
-        total_spent=total_spent,
-        gifted_tuition_amount=gifted,
-        tuition_balance=tuition_balance,
+        total_spent=float(total_spent),
+        gifted_tuition_amount=float(gifted),
+        tuition_balance=float(tuition_balance),
     )
 
 
@@ -309,7 +310,7 @@ async def _write_audit_log(
     action: str,
     customer_id: str | None = None,
     changes: str | None = None,
-    amount_delta: int | None = None,
+    amount_delta: float | None = None,
     operator_user_id: str | None = None,
     operator_role: str | None = None,
     note: str | None = None,
@@ -1248,6 +1249,7 @@ async def sales_dashboard(
         },
         "monthly_orders": monthly_orders,
     }
+
 
 
 

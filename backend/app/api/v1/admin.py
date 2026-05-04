@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta
+from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
@@ -84,7 +85,7 @@ class AdminDashboardOut(BaseModel):
 
 class AdminCourseStatusUpdateIn(BaseModel):
     status: str
-    refund_amount: int | None = None
+    refund_amount: float | None = None
 
 
 class TuitionGiftRequestOut(BaseModel):
@@ -92,7 +93,7 @@ class TuitionGiftRequestOut(BaseModel):
     customer_id: str
     customer_name: str
     sales_user_name: str | None
-    amount: int
+    amount: float
     sales_note: str | None
     admin_note: str | None
     status: str
@@ -107,7 +108,7 @@ class TuitionGiftReviewIn(BaseModel):
 
 class AdminWriteoffCourseIn(BaseModel):
     product_id: str
-    amount: int
+    amount: float
     status: str
     note: str | None = None
 
@@ -115,8 +116,8 @@ class AdminWriteoffCourseIn(BaseModel):
 class AdminWriteoffCourseOut(BaseModel):
     enrollment_id: str
     product_name: str
-    amount_paid: int
-    refunded_amount: int
+    amount_paid: float
+    refunded_amount: float
     status: str
     created_at: str
 
@@ -130,19 +131,19 @@ class AdminTuitionWriteoffCustomerOut(BaseModel):
     consult_count: int
     wechat_name: str | None
     sales_note: str | None
-    total_spent: int
-    gifted_tuition_amount: int
-    tuition_balance: int
+    total_spent: float
+    gifted_tuition_amount: float
+    tuition_balance: float
     pending_gift_request_count: int
     latest_pending_gift_note: str | None
     courses: list[AdminWriteoffCourseOut]
 
 
 class AdminTuitionWriteoffSummaryOut(BaseModel):
-    total_gifted: int
-    total_spent: int
-    last_month_spent: int
-    total_balance: int
+    total_gifted: float
+    total_spent: float
+    last_month_spent: float
+    total_balance: float
     total_pending: int
 
 
@@ -150,7 +151,7 @@ class AdminAuditLogItemOut(BaseModel):
     id: str
     created_at: str
     action: str
-    amount_delta: int | None
+    amount_delta: float | None
     note: str | None
     resource_type: str
     resource_id: str
@@ -247,7 +248,7 @@ async def approve_tuition_gift_request(
     req.reviewed_at = datetime.utcnow()
     req.updated_at = datetime.utcnow()
     req.admin_note = body.admin_note
-    customer.gifted_tuition_amount = max(0, (customer.gifted_tuition_amount or 0) + req.amount)
+    customer.gifted_tuition_amount = max(Decimal("0"), (customer.gifted_tuition_amount or Decimal("0")) + req.amount)
     db.add(
         AuditLog(
             resource_type="tuition_gift_request",
@@ -317,18 +318,18 @@ async def tuition_writeoff_summary(
     else:
         last_month_start = datetime(now.year, now.month - 1, 1)
 
-    total_gifted = 0
-    total_spent = 0
-    total_balance = 0
+    total_gifted = Decimal("0")
+    total_spent = Decimal("0")
+    total_balance = Decimal("0")
     total_pending = 0
-    last_month_spent = 0
+    last_month_spent = Decimal("0")
 
     for c in customers:
-        gifted = int(c.gifted_tuition_amount or 0)
+        gifted = Decimal(c.gifted_tuition_amount or 0)
         spent_r = await db.execute(
             select(func.coalesce(func.sum(Order.amount - Order.refund_total), 0)).where(Order.customer_id == c.id)
         )
-        spent = int(spent_r.scalar() or 0)
+        spent = Decimal(spent_r.scalar() or 0)
         pending_r = await db.execute(
             select(func.count(TuitionGiftRequest.id)).where(
                 TuitionGiftRequest.customer_id == c.id,
@@ -346,15 +347,15 @@ async def tuition_writeoff_summary(
 
         total_gifted += gifted
         total_spent += spent
-        total_balance += max(0, gifted - spent)
+        total_balance += max(Decimal("0"), gifted - spent)
         total_pending += int(pending_r.scalar() or 0)
-        last_month_spent += int(last_month_r.scalar() or 0)
+        last_month_spent += Decimal(last_month_r.scalar() or 0)
 
     return AdminTuitionWriteoffSummaryOut(
-        total_gifted=total_gifted,
-        total_spent=total_spent,
-        last_month_spent=last_month_spent,
-        total_balance=total_balance,
+        total_gifted=float(total_gifted),
+        total_spent=float(total_spent),
+        last_month_spent=float(last_month_spent),
+        total_balance=float(total_balance),
         total_pending=total_pending,
     )
 
@@ -395,9 +396,9 @@ async def list_tuition_writeoff_customers(
         spent_r = await db.execute(
             select(func.coalesce(func.sum(Order.amount - Order.refund_total), 0)).where(Order.customer_id == c.id)
         )
-        total_spent = int(spent_r.scalar() or 0)
-        gifted = int(c.gifted_tuition_amount or 0)
-        tuition_balance = max(0, gifted - total_spent)
+        total_spent = Decimal(spent_r.scalar() or 0)
+        gifted = Decimal(c.gifted_tuition_amount or 0)
+        tuition_balance = max(Decimal("0"), gifted - total_spent)
 
         pending_r = await db.execute(
             select(TuitionGiftRequest)
@@ -423,7 +424,7 @@ async def list_tuition_writeoff_customers(
                 enrollment_id=e.id,
                 product_name=p.name,
                 amount_paid=e.amount_paid,
-                refunded_amount=int(o.refund_total or 0),
+                refunded_amount=float(o.refund_total or 0),
                 status=e.status,
                 created_at=e.created_at.isoformat(),
             )
@@ -440,9 +441,9 @@ async def list_tuition_writeoff_customers(
                 consult_count=consult_count,
                 wechat_name=wechat_name,
                 sales_note=c.sales_note,
-                total_spent=total_spent,
-                gifted_tuition_amount=gifted,
-                tuition_balance=tuition_balance,
+                total_spent=float(total_spent),
+                gifted_tuition_amount=float(gifted),
+                tuition_balance=float(tuition_balance),
                 pending_gift_request_count=pending_count,
                 latest_pending_gift_note=latest_pending_note,
                 courses=courses,
@@ -645,10 +646,10 @@ async def update_admin_course_status(
 
     now = datetime.utcnow()
     if body.status == "admin_marked_completed_refunded":
-        order_amount = int(order.amount or enrollment.amount_paid or 0)
-        current_refund = int(order.refund_total or 0)
-        max_refund = max(0, order_amount - current_refund)
-        refund_amount = int(body.refund_amount if body.refund_amount is not None else max_refund)
+        order_amount = Decimal(order.amount or enrollment.amount_paid or 0)
+        current_refund = Decimal(order.refund_total or 0)
+        max_refund = max(Decimal("0"), order_amount - current_refund)
+        refund_amount = Decimal(body.refund_amount if body.refund_amount is not None else max_refund)
         if refund_amount <= 0:
             raise HTTPException(400, "????????0")
         if refund_amount > max_refund:
@@ -690,7 +691,7 @@ async def update_admin_course_status(
             )
         )
     else:
-        revert_amount = int(order.refund_total or 0)
+        revert_amount = Decimal(order.refund_total or 0)
 
         enrollment.status = "admin_marked_completed"
         enrollment.status_updated_by = current_user.id

@@ -2,6 +2,7 @@
 import { Button, DatePicker, Form, Input, InputNumber, Modal, Select, Table, Tag, message } from 'antd'
 import dayjs from 'dayjs'
 import { api } from '../../api/client'
+import { useNavigate } from 'react-router-dom'
 
 interface LinkAccount { id: string; account_id: string; customer_count: number; is_active: boolean }
 interface CustomerTag { id: string; name: string; color: string }
@@ -42,6 +43,7 @@ interface TuitionGiftRequestItem {
   created_at: string
 }
 
+
 type CourseStatusKey =
   | 'purchased_not_started'
   | 'sales_marked_completed'
@@ -59,7 +61,7 @@ const COURSE_STATUS_META: Record<CourseStatusKey, { label: string; bg: string; c
   admin_marked_completed_refunded: { label: '管理员销课+退款', bg: '#EAF2FF', color: '#1D4ED8', border: '#BFDBFE' },
 }
 
-const y2f = (cents: number) => `¥${(cents / 100).toLocaleString()}`
+const y2f = (yuan: number) => `¥${Number(yuan || 0).toLocaleString()}`
 
 const followUpLabel = (item: Customer) => {
   if (!item.next_follow_up) return '未设置'
@@ -76,6 +78,7 @@ const salesStatusSet = new Set<CourseStatusKey>([
 ])
 
 export default function CustomerList() {
+  const navigate = useNavigate()
   const [linkAccounts, setLinkAccounts] = useState<LinkAccount[]>([])
   const [customers, setCustomers] = useState<Customer[]>([])
   const [loading, setLoading] = useState(false)
@@ -219,7 +222,7 @@ export default function CustomerList() {
     const values = await giftRequestForm.validateFields()
     await api.post('/sales/tuition-gift-requests', {
       customer_id: values.customer_id,
-      amount: Math.round(values.amount_yuan * 100),
+      amount: Number(values.amount_yuan),
       sales_note: values.sales_note || undefined,
     })
     message.success('赠送学费申请已提交')
@@ -236,6 +239,7 @@ export default function CustomerList() {
       setGiftHistoryLoading(false)
     }
   }
+
 
   const updateCourseStatus = async (customerId: string, enrollmentId: string, status: CourseStatusKey) => {
     if (!salesStatusSet.has(status)) return
@@ -390,7 +394,7 @@ export default function CustomerList() {
                                 disabled={courseActionLoadingKey !== null}
                                 onClick={() => {
                                   setEditingAmountCourse({ customerId: r.id, enrollmentId: c.enrollment_id, amountPaid: c.amount_paid })
-                                  amountForm.setFieldsValue({ amount_yuan: Number((c.amount_paid / 100).toFixed(2)) })
+                                  amountForm.setFieldsValue({ amount_yuan: Number(c.amount_paid) })
                                 }}
                                 style={{ border: '1px solid #d9d9d9', background: '#fff', borderRadius: 4, fontSize: 10, padding: '0 6px', cursor: 'pointer' }}
                               >改价</button>
@@ -398,7 +402,7 @@ export default function CustomerList() {
                                 disabled={maxRefund <= 0 || courseActionLoadingKey !== null}
                                 onClick={() => {
                                   setEditingRefundCourse({ customerId: r.id, enrollmentId: c.enrollment_id, maxRefund })
-                                  refundForm.setFieldsValue({ refund_yuan: Number((maxRefund / 100).toFixed(2)) })
+                                  refundForm.setFieldsValue({ refund_yuan: Number(maxRefund) })
                                 }}
                                 style={{ border: '1px solid #fecaca', background: '#fff1f2', color: '#b91c1c', borderRadius: 4, fontSize: 10, padding: '0 6px', cursor: 'pointer' }}
                               >退款</button>
@@ -502,7 +506,18 @@ export default function CustomerList() {
         )
       }
     },
-    { title: '咨询次数', width: 80, render: (_: unknown, r: Customer) => <Select size='small' value={r.consultation_count ?? undefined} style={{ width: 60 }} placeholder='—' disabled={r.consultation_count === null} options={Array.from({ length: 21 }, (_, i) => ({ value: i, label: `${i}` }))} onChange={async (val) => { await api.put(`/sales/customers/${r.id}`, { consultation_count: val }); fetchCustomers() }} /> },
+    {
+      title: '咨询次数',
+      width: 90,
+      render: (_: unknown, r: Customer) => (
+        <button
+          onClick={() => navigate(`/sales/customers/${r.id}/logs`)}
+          style={{ border: '1px solid #d9d9d9', background: '#fff', borderRadius: 6, fontSize: 11, padding: '1px 8px', cursor: 'pointer' }}
+        >
+          {r.consultation_count ?? 0} 次
+        </button>
+      ),
+    },
     { title: '加粉日期', width: 96, dataIndex: 'added_date', render: (v: string) => <span style={{ fontSize: 12 }}>{dayjs(v).format('YYYY-MM-DD')}</span> },
     { title: '绑定微信', width: 90, dataIndex: 'link_account_name', render: (v: string | null) => <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }}>{v || '-'}</span> },
   ]
@@ -682,8 +697,8 @@ export default function CustomerList() {
           precision={2}
           style={{ width: '100%' }}
           addonBefore='实付金额(元)'
-          value={newCourseAmount === null ? null : newCourseAmount / 100}
-          onChange={(v) => setNewCourseAmount(v === null ? null : Math.round(Number(v) * 100))}
+          value={newCourseAmount === null ? null : Number(newCourseAmount)}
+          onChange={(v) => setNewCourseAmount(v === null ? null : Number(v))}
         />
         </div>
       </Modal>
@@ -760,7 +775,7 @@ export default function CustomerList() {
         onOk={async () => {
           if (!editingAmountCourse) return
           const values = await amountForm.validateFields()
-          await updateCourseAmount(editingAmountCourse.customerId, editingAmountCourse.enrollmentId, Math.round(values.amount_yuan * 100))
+          await updateCourseAmount(editingAmountCourse.customerId, editingAmountCourse.enrollmentId, Number(values.amount_yuan))
           setEditingAmountCourse(null)
           amountForm.resetFields()
         }}
@@ -780,12 +795,12 @@ export default function CustomerList() {
         onOk={async () => {
           if (!editingRefundCourse) return
           const values = await refundForm.validateFields()
-          const refundCents = Math.round(values.refund_yuan * 100)
-          if (refundCents > editingRefundCourse.maxRefund) {
+          const refundAmount = Number(values.refund_yuan)
+          if (refundAmount > editingRefundCourse.maxRefund) {
             message.error('退款金额不能超过可退金额')
             return
           }
-          await refundCourse(editingRefundCourse.customerId, editingRefundCourse.enrollmentId, refundCents)
+          await refundCourse(editingRefundCourse.customerId, editingRefundCourse.enrollmentId, refundAmount)
           setEditingRefundCourse(null)
           refundForm.resetFields()
         }}
@@ -800,6 +815,7 @@ export default function CustomerList() {
           </div>
         </Form>
       </Modal>
+
     </div>
   )
 }

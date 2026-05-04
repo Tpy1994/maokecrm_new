@@ -1,5 +1,7 @@
 from datetime import datetime
+from decimal import Decimal
 
+from sqlalchemy import Column, Numeric
 from sqlmodel import Field, SQLModel
 
 from app.models.user import new_uuid, utcnow
@@ -12,10 +14,10 @@ class Order(SQLModel, table=True):
     customer_id: str = Field(foreign_key="customers.id", max_length=36)
     product_id: str = Field(foreign_key="products.id", max_length=36)
     sales_user_id: str = Field(foreign_key="users.id", max_length=36)
-    amount: int = Field(default=0)
-    list_price: int = Field(default=0)
-    deal_price: int = Field(default=0)
-    refund_total: int = Field(default=0)
+    amount: Decimal = Field(default=Decimal("0.00"), sa_column=Column(Numeric(12, 2), nullable=False, server_default="0"))
+    list_price: Decimal = Field(default=Decimal("0.00"), sa_column=Column(Numeric(12, 2), nullable=False, server_default="0"))
+    deal_price: Decimal = Field(default=Decimal("0.00"), sa_column=Column(Numeric(12, 2), nullable=False, server_default="0"))
+    refund_total: Decimal = Field(default=Decimal("0.00"), sa_column=Column(Numeric(12, 2), nullable=False, server_default="0"))
     status: str = Field(default="active", max_length=30)
     refunded_at: datetime | None = Field(default=None)
 

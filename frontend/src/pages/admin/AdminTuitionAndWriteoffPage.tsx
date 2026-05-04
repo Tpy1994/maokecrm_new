@@ -75,16 +75,16 @@ const COURSE_STATUS_META: Record<CourseStatusKey, { label: string; bg: string; c
   admin_marked_completed_refunded: { label: '管理员销课+退款', bg: '#EAF2FF', color: '#1D4ED8', border: '#BFDBFE' },
 }
 
-const y2f = (cents: number) => `￥${(cents / 100).toLocaleString()}`
+const y2f = (yuan: number) => `￥${Number(yuan || 0).toLocaleString()}`
 export default function AdminTuitionAndWriteoffPage() {
   const [customers, setCustomers] = useState<CustomerItem[]>([])
   const [selectedCustomerId, setSelectedCustomerId] = useState<string | null>(null)
   const [products, setProducts] = useState<ProductOption[]>([])
   const [writeoffOpen, setWriteoffOpen] = useState(false)
-  const [writeoffForm, setWriteoffForm] = useState({ product_id: '', amount_yuan: 0, note: '' })
+  const [writeoffForm, setWriteoffForm] = useState({ product_id: '', amount: 0, note: '' })
   const [activeCourseKey, setActiveCourseKey] = useState<string | null>(null)
   const [refundTarget, setRefundTarget] = useState<{ customerId: string; enrollmentId: string; maxRefund: number } | null>(null)
-  const [refundAmountYuan, setRefundAmountYuan] = useState<number>(0)
+  const [refundAmount, setRefundAmount] = useState<number>(0)
   const [refundingId, setRefundingId] = useState<string | null>(null)
 
   const [rows, setRows] = useState<TuitionGiftRequestItem[]>([])
@@ -142,12 +142,12 @@ export default function AdminTuitionAndWriteoffPage() {
     fetchSummary()
   }
 
-  const refundCourse = async (customerId: string, enrollmentId: string, refundAmountCents: number) => {
+  const refundCourse = async (customerId: string, enrollmentId: string, refundAmountYuan: number) => {
     setRefundingId(enrollmentId)
     try {
       await api.put(`/admin/customers/${customerId}/courses/${enrollmentId}/status`, {
         status: 'admin_marked_completed_refunded',
-        refund_amount: refundAmountCents,
+        refund_amount: refundAmountYuan,
       })
       message.success('已退款')
       await fetchCustomers()
@@ -371,7 +371,7 @@ export default function AdminTuitionAndWriteoffPage() {
                                         disabled={refundingId === course.enrollment_id}
                                         onClick={() => {
                                           setRefundTarget({ customerId: c.customer_id, enrollmentId: course.enrollment_id, maxRefund })
-                                          setRefundAmountYuan(Number((maxRefund / 100).toFixed(2)))
+                                          setRefundAmount(Number(maxRefund.toFixed(2)))
                                         }}
                                         style={{ border: '1px solid #bfdbfe', background: '#eff6ff', color: '#1d4ed8', borderRadius: 4, fontSize: 10, padding: '0 6px', cursor: 'pointer' }}
                                       >
@@ -463,13 +463,13 @@ export default function AdminTuitionAndWriteoffPage() {
           }
           await api.post(`/admin/customers/${selectedCustomer.customer_id}/writeoff-courses`, {
             product_id: writeoffForm.product_id,
-            amount: Math.round(writeoffForm.amount_yuan * 100),
+            amount: writeoffForm.amount,
             status: 'admin_marked_completed',
             note: writeoffForm.note || undefined,
           })
           message.success('管理员销课记录已新增')
           setWriteoffOpen(false)
-          setWriteoffForm({ product_id: '', amount_yuan: 0, note: '' })
+          setWriteoffForm({ product_id: '', amount: 0, note: '' })
           await fetchCustomers()
           await fetchSummary()
         }}
@@ -481,7 +481,7 @@ export default function AdminTuitionAndWriteoffPage() {
             placeholder='选择课程'
             onChange={(v) => {
               const p = products.find((item) => item.id === v)
-              setWriteoffForm((prev) => ({ ...prev, product_id: v, amount_yuan: p ? p.price / 100 : 0 }))
+              setWriteoffForm((prev) => ({ ...prev, product_id: v, amount: p ? Number(p.price) : 0 }))
             }}
             options={products.map((p) => ({ value: p.id, label: `${p.name}（${y2f(p.price)}）` }))}
           />
@@ -490,8 +490,8 @@ export default function AdminTuitionAndWriteoffPage() {
             precision={2}
             style={{ width: '100%' }}
             addonBefore='销课金额(元)'
-            value={writeoffForm.amount_yuan}
-            onChange={(v) => setWriteoffForm((prev) => ({ ...prev, amount_yuan: Number(v || 0) }))}
+            value={writeoffForm.amount}
+            onChange={(v) => setWriteoffForm((prev) => ({ ...prev, amount: Number(v || 0) }))}
           />
           <Input.TextArea
             rows={3}
@@ -508,16 +508,15 @@ export default function AdminTuitionAndWriteoffPage() {
         confirmLoading={refundingId !== null}
         onOk={async () => {
           if (!refundTarget) return
-          const refundCents = Math.round(refundAmountYuan * 100)
-          if (refundCents <= 0) {
+          if (refundAmount <= 0) {
             message.error('请输入退款金额')
             return
           }
-          if (refundCents > refundTarget.maxRefund) {
+          if (refundAmount > refundTarget.maxRefund) {
             message.error('退款金额不能超过可退金额')
             return
           }
-          await refundCourse(refundTarget.customerId, refundTarget.enrollmentId, refundCents)
+          await refundCourse(refundTarget.customerId, refundTarget.enrollmentId, refundAmount)
           setRefundTarget(null)
         }}
         onCancel={() => setRefundTarget(null)}
@@ -527,8 +526,8 @@ export default function AdminTuitionAndWriteoffPage() {
           precision={2}
           style={{ width: '100%' }}
           addonBefore='退款金额(元)'
-          value={refundAmountYuan}
-          onChange={(v) => setRefundAmountYuan(Number(v || 0))}
+          value={refundAmount}
+          onChange={(v) => setRefundAmount(Number(v || 0))}
         />
         <div style={{ color: '#6b7280', fontSize: 12, marginTop: 8 }}>
           最多可退：{refundTarget ? y2f(refundTarget.maxRefund) : '¥0.00'}
