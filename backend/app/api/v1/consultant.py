@@ -92,6 +92,20 @@ class LogItemOut(BaseModel):
     updated_at: str
 
 
+class ConsultantCustomerDetailOut(BaseModel):
+    customer_id: str
+    customer_name: str
+    phone: str
+    customer_info: str
+    sales_name: str | None
+    wechat_name: str | None
+    tags: list[TagOut]
+    products: list[ProductOut]
+    consultation_count: int
+    total_duration: int
+    latest_log_at: str | None
+
+
 class UpdateConsultantCustomerIn(BaseModel):
     note: str | None = None
     start_date: str | None = None
@@ -609,14 +623,35 @@ async def join_pool_service(
 @router.get("/customers/{customer_id}/consultation-logs", response_model=list[LogItemOut])
 async def list_logs(
     customer_id: str,
+    keyword: str | None = Query(None),
+    date_from: str | None = Query(None),
+    date_to: str | None = Query(None),
+    mine_only: bool = Query(False),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_role("admin", "sales", "consultant")),
 ):
+    conditions = [ConsultationLog.customer_id == customer_id]
+    if mine_only and current_user.role == "consultant":
+        conditions.append(ConsultationLog.consultant_id == current_user.id)
+    if date_from:
+        conditions.append(ConsultationLog.log_date >= date.fromisoformat(date_from))
+    if date_to:
+        conditions.append(ConsultationLog.log_date <= date.fromisoformat(date_to))
+    if keyword and keyword.strip():
+        k = f"%{keyword.strip()}%"
+        conditions.append(
+            (ConsultationLog.summary.ilike(k)) | (ConsultationLog.content.ilike(k))
+        )
+
     rows = await db.execute(
         select(ConsultationLog, User)
         .join(User, User.id == ConsultationLog.consultant_id)
-        .where(ConsultationLog.customer_id == customer_id)
+        .where(*conditions)
         .order_by(ConsultationLog.log_date.desc(), ConsultationLog.created_at.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
     )
     return [
         LogItemOut(
@@ -635,6 +670,55 @@ async def list_logs(
         )
         for log, u in rows.all()
     ]
+
+
+@router.get("/customers/{customer_id}/detail", response_model=ConsultantCustomerDetailOut)
+async def customer_detail(
+    customer_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role("admin", "sales", "consultant")),
+):
+    if current_user.role == "consultant":
+        await _ensure_access(customer_id, current_user, db)
+
+    customer_r = await db.execute(select(Customer).where(Customer.id == customer_id))
+    customer = customer_r.scalar_one_or_none()
+    if customer is None:
+        raise HTTPException(404, "customer not found")
+
+    tags = await _build_tags(customer_id, db)
+    products, _ = await _build_products(customer_id, db)
+
+    sales_r = await db.execute(select(User.name).where(User.id == customer.entry_user_id))
+    sales_name = sales_r.scalar_one_or_none()
+    link_r = await db.execute(select(LinkAccount.account_id).where(LinkAccount.id == customer.link_account_id))
+    wechat_name = link_r.scalar_one_or_none()
+
+    count_r = await db.execute(select(func.count(ConsultationLog.id)).where(ConsultationLog.customer_id == customer_id))
+    duration_r = await db.execute(
+        select(func.coalesce(func.sum(ConsultationLog.duration), 0)).where(ConsultationLog.customer_id == customer_id)
+    )
+    latest_r = await db.execute(
+        select(ConsultationLog.created_at)
+        .where(ConsultationLog.customer_id == customer_id)
+        .order_by(ConsultationLog.created_at.desc())
+        .limit(1)
+    )
+    latest_at = latest_r.scalar_one_or_none()
+
+    return ConsultantCustomerDetailOut(
+        customer_id=customer.id,
+        customer_name=customer.name,
+        phone=customer.phone,
+        customer_info=_customer_info(customer),
+        sales_name=sales_name,
+        wechat_name=wechat_name,
+        tags=tags,
+        products=products,
+        consultation_count=int(count_r.scalar() or 0),
+        total_duration=int(duration_r.scalar() or 0),
+        latest_log_at=latest_at.isoformat() if latest_at else None,
+    )
 
 
 @router.post("/customers/{customer_id}/logs", response_model=LogItemOut)
