@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+﻿from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select, func, and_
@@ -12,6 +12,7 @@ from app.models.product import Product
 from app.models.order import Order, CustomerProduct
 from app.models.consultant_customer import ConsultantCustomer
 from app.models.customer_course_enrollment import CustomerCourseEnrollment
+from app.models.audit_log import AuditLog
 from app.models.tag import Tag, CustomerTag, TagCategory
 
 router = APIRouter(prefix="/sales", tags=["sales"])
@@ -43,6 +44,7 @@ class CourseEnrollmentOut(BaseModel):
     product_id: str
     product_name: str
     amount_paid: int
+    refunded_amount: int
     status: str
 
 class CustomerOut(BaseModel):
@@ -101,6 +103,19 @@ class SalesCourseStatusUpdateIn(BaseModel):
 
 class SalesCreateCourseIn(BaseModel):
     product_id: str
+    amount: int | None = None
+
+
+class SalesCourseRefundIn(BaseModel):
+    refund_amount: int = Field(ge=0)
+
+
+class SalesCoursePriceUpdateIn(BaseModel):
+    amount_paid: int = Field(ge=0)
+
+
+class SalesCourseRefundRevertIn(BaseModel):
+    pass
 
 
 SALES_COURSE_STATUSES = {
@@ -125,7 +140,7 @@ async def _get_my_customer(customer_id: str, current_user: User, db: AsyncSessio
         )
     )
     if not la_result.scalar_one_or_none():
-        raise HTTPException(403, "无权操作此客户")
+        raise HTTPException(403, "无权操作该客户")
     return customer
 
 
@@ -165,8 +180,9 @@ async def _build_customer_out(customer: Customer, db: AsyncSession) -> CustomerO
 
     # course enrollments
     enrollment_rows = await db.execute(
-        select(CustomerCourseEnrollment, Product)
+        select(CustomerCourseEnrollment, Product, Order)
         .join(Product, Product.id == CustomerCourseEnrollment.product_id)
+        .join(Order, Order.id == CustomerCourseEnrollment.order_id)
         .where(CustomerCourseEnrollment.customer_id == customer.id)
         .order_by(CustomerCourseEnrollment.created_at.desc())
     )
@@ -176,13 +192,14 @@ async def _build_customer_out(customer: Customer, db: AsyncSession) -> CustomerO
             product_id=e.product_id,
             product_name=p.name,
             amount_paid=e.amount_paid,
+            refunded_amount=o.refund_total,
             status=e.status,
         )
-        for e, p in enrollment_rows.all()
+        for e, p, o in enrollment_rows.all()
     ]
 
     total_spent_r = await db.execute(
-        select(func.coalesce(func.sum(Order.amount), 0)).where(Order.customer_id == customer.id)
+        select(func.coalesce(func.sum(Order.amount - Order.refund_total), 0)).where(Order.customer_id == customer.id)
     )
     total_spent = int(total_spent_r.scalar() or 0)
     gifted = customer.gifted_tuition_amount or 0
@@ -238,6 +255,83 @@ async def _build_customer_out(customer: Customer, db: AsyncSession) -> CustomerO
     )
 
 
+async def _write_audit_log(
+    db: AsyncSession,
+    *,
+    resource_type: str,
+    resource_id: str,
+    action: str,
+    customer_id: str | None = None,
+    changes: str | None = None,
+    amount_delta: int | None = None,
+    operator_user_id: str | None = None,
+    operator_role: str | None = None,
+    note: str | None = None,
+    related_event_id: str | None = None,
+) -> None:
+    db.add(
+        AuditLog(
+            resource_type=resource_type,
+            resource_id=resource_id,
+            customer_id=customer_id,
+            action=action,
+            changes=changes,
+            amount_delta=amount_delta,
+            operator_user_id=operator_user_id,
+            operator_role=operator_role,
+            note=note,
+            related_event_id=related_event_id,
+        )
+    )
+
+
+async def _write_audit_log(
+    db: AsyncSession,
+    *,
+    resource_type: str,
+    resource_id: str,
+    action: str,
+    customer_id: str | None = None,
+    changes: str | None = None,
+    amount_delta: int | None = None,
+    operator_user_id: str | None = None,
+    operator_role: str | None = None,
+    note: str | None = None,
+    related_event_id: str | None = None,
+) -> None:
+    db.add(
+        AuditLog(
+            resource_type=resource_type,
+            resource_id=resource_id,
+            customer_id=customer_id,
+            action=action,
+            changes=changes,
+            amount_delta=amount_delta,
+            operator_user_id=operator_user_id,
+            operator_role=operator_role,
+            note=note,
+            related_event_id=related_event_id,
+        )
+    )
+
+
+async def _get_enrollment_or_404(
+    db: AsyncSession,
+    customer_id: str,
+    enrollment_id: str,
+) -> CustomerCourseEnrollment:
+    row = await db.execute(
+        select(CustomerCourseEnrollment).where(
+            CustomerCourseEnrollment.id == enrollment_id,
+            CustomerCourseEnrollment.customer_id == customer_id,
+        )
+    )
+    enrollment = row.scalar_one_or_none()
+    if enrollment is None:
+        raise HTTPException(404, "课程记录不存在")
+    return enrollment
+
+
 # ===================== Link Accounts =====================
 
 @router.get("/link-accounts", response_model=list[LinkAccountOut])
@@ -289,7 +383,7 @@ async def create_link_account_by_sales(
 
     db.add(LinkAccount(account_id=account_id, owner_id=current_user.id))
     await db.commit()
-    return {"message": "新增成功"}
+    return {"message": "鏂板鎴愬姛"}
 
 
 # ===================== Customers =====================
@@ -461,9 +555,16 @@ async def purchase_product(
     if not product:
         raise HTTPException(404, "产品不存在")
 
+    now = datetime.utcnow()
     order = Order(
-        customer_id=customer_id, product_id=body.product_id,
-        sales_user_id=current_user.id, amount=body.amount,
+        customer_id=customer_id,
+        product_id=body.product_id,
+        sales_user_id=current_user.id,
+        amount=body.amount,
+        list_price=product.price,
+        deal_price=body.amount,
+        refund_total=0,
+        status="active",
     )
     db.add(order)
     await db.flush()
@@ -493,7 +594,7 @@ async def purchase_product(
             status="purchased_not_started",
             status_updated_by=current_user.id,
             status_updated_role="sales",
-            status_updated_at=datetime.utcnow(),
+            status_updated_at=now,
         )
     )
 
@@ -509,9 +610,21 @@ async def purchase_product(
                 consultant_id=None, customer_id=customer_id, status="pending",
             ))
 
-    customer.last_active_at = datetime.utcnow()
+    customer.last_active_at = now
+    db.add(
+        AuditLog(
+            resource_type="order",
+            resource_id=order.id,
+            customer_id=customer_id,
+            action="sales_purchase_course",
+            amount_delta=body.amount,
+            operator_user_id=current_user.id,
+            operator_role="sales",
+            note=product.name,
+        )
+    )
     await db.commit()
-    return {"order_id": order.id, "message": "成交成功"}
+    return {"order_id": order.id, "message": "鎴愪氦鎴愬姛"}
 
 
 @router.post("/orders/{order_id}/refund")
@@ -528,10 +641,13 @@ async def refund_order(
     customer = await _get_my_customer(order.customer_id, current_user, db)
 
     if order.refunded_at:
-        raise HTTPException(400, "已退款，不可重复操作")
+        raise HTTPException(400, "已退款，不能重复操作")
 
     now = datetime.utcnow()
     order.refunded_at = now
+    order.refund_total = order.deal_price or order.amount
+    order.status = "refunded"
+    order.updated_at = now
 
     cp_result = await db.execute(
         select(CustomerProduct).where(
@@ -563,22 +679,162 @@ async def refund_order(
         enrollment.status_updated_role = "sales"
         enrollment.status_updated_at = now
         enrollment.updated_at = now
+        enrollment.refunded_at = now
 
+    db.add(
+        AuditLog(
+            resource_type="order",
+            resource_id=order.id,
+            customer_id=order.customer_id,
+            action="sales_refund_course",
+            amount_delta=-order.refund_total,
+            operator_user_id=current_user.id,
+            operator_role="sales",
+        )
+    )
     await db.commit()
 
-    # Time period impact
     om, oy = order.created_at.month, order.created_at.year
     rm, ry = now.month, now.year
     if ry == oy and rm == om:
-        impact = "当月退款 — 扣减本月和双月数据"
+        impact = "当月退费，扣减本月和双月数据"
     elif (ry == oy and (rm == om + 1 or rm == om - 1)) or \
          (ry == oy + 1 and om == 12 and rm == 1) or \
          (ry == oy - 1 and om == 1 and rm == 12):
-        impact = "双月内非当月退款 — 仅扣减双月数据"
+        impact = "双月内非当月退费，仅扣减双月数据"
     else:
-        impact = "双月外退款 — 不影响任何数据"
+        impact = "双月外退费，不影响任何数据"
 
     return {"amount": order.amount, "refunded_at": now.isoformat(), "impact": impact}
+
+
+@router.post("/customers/{customer_id}/courses/{enrollment_id}/refund")
+async def refund_sales_course(
+    customer_id: str,
+    enrollment_id: str,
+    body: SalesCourseRefundIn,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role("sales")),
+):
+    await _get_my_customer(customer_id, current_user, db)
+    enrollment = await _get_enrollment_or_404(db, customer_id, enrollment_id)
+    order_r = await db.execute(select(Order).where(Order.id == enrollment.order_id))
+    order = order_r.scalar_one_or_none()
+    if order is None:
+        raise HTTPException(404, "订单不存在")
+    if order.refunded_at:
+        raise HTTPException(400, "已退款，不能重复操作")
+    refund_amount = min(body.refund_amount, order.deal_price or order.amount)
+    if refund_amount <= 0:
+        raise HTTPException(400, "refund_amount must be > 0")
+    now = datetime.utcnow()
+    order.refund_total = min((order.refund_total or 0) + refund_amount, order.deal_price or order.amount)
+    order.status = "refunded" if order.refund_total >= (order.deal_price or order.amount) else "partially_refunded"
+    order.updated_at = now
+    if order.refund_total >= (order.deal_price or order.amount):
+        order.refunded_at = now
+    enrollment.status = "sales_marked_completed_refunded" if enrollment.status == "sales_marked_completed" else "purchased_not_started_refunded"
+    enrollment.status_updated_by = current_user.id
+    enrollment.status_updated_role = "sales"
+    enrollment.status_updated_at = now
+    enrollment.updated_at = now
+    enrollment.refunded_at = now
+    db.add(
+        AuditLog(
+            resource_type="order",
+            resource_id=order.id,
+            customer_id=customer_id,
+            action="sales_partial_refund_course",
+            amount_delta=-refund_amount,
+            operator_user_id=current_user.id,
+            operator_role="sales",
+            note=enrollment.product_id,
+        )
+    )
+    await db.commit()
+    return {"message": "ok", "refund_amount": refund_amount, "refund_total": order.refund_total}
+
+
+@router.post("/customers/{customer_id}/courses/{enrollment_id}/refund/revert")
+async def revert_sales_course_refund(
+    customer_id: str,
+    enrollment_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role("sales")),
+):
+    await _get_my_customer(customer_id, current_user, db)
+    enrollment = await _get_enrollment_or_404(db, customer_id, enrollment_id)
+    order_r = await db.execute(select(Order).where(Order.id == enrollment.order_id))
+    order = order_r.scalar_one_or_none()
+    if order is None:
+        raise HTTPException(404, "订单不存在")
+    if not order.refund_total:
+        raise HTTPException(400, "当前没有可撤销的退款")
+    now = datetime.utcnow()
+    revert_amount = order.refund_total
+    order.refund_total = 0
+    order.refunded_at = None
+    order.status = "active"
+    order.updated_at = now
+    if enrollment.status == "sales_marked_completed_refunded":
+        enrollment.status = "sales_marked_completed"
+    else:
+        enrollment.status = "purchased_not_started"
+    enrollment.status_updated_by = current_user.id
+    enrollment.status_updated_role = "sales"
+    enrollment.status_updated_at = now
+    enrollment.updated_at = now
+    enrollment.refunded_at = None
+    db.add(
+        AuditLog(
+            resource_type="order",
+            resource_id=order.id,
+            customer_id=customer_id,
+            action="sales_revert_refund_course",
+            amount_delta=revert_amount,
+            operator_user_id=current_user.id,
+            operator_role="sales",
+        )
+    )
+    await db.commit()
+    return {"message": "ok"}
+
+
+@router.put("/customers/{customer_id}/courses/{enrollment_id}/amount")
+async def update_sales_course_amount(
+    customer_id: str,
+    enrollment_id: str,
+    body: SalesCoursePriceUpdateIn,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role("sales")),
+):
+    await _get_my_customer(customer_id, current_user, db)
+    enrollment = await _get_enrollment_or_404(db, customer_id, enrollment_id)
+    order_r = await db.execute(select(Order).where(Order.id == enrollment.order_id))
+    order = order_r.scalar_one_or_none()
+    if order is None:
+        raise HTTPException(404, "订单不存在")
+    if order.refunded_at:
+        raise HTTPException(400, "已退款课程不能改价")
+    now = datetime.utcnow()
+    order.amount = body.amount_paid
+    order.deal_price = body.amount_paid
+    order.updated_at = now
+    enrollment.amount_paid = body.amount_paid
+    enrollment.updated_at = now
+    db.add(
+        AuditLog(
+            resource_type="order",
+            resource_id=order.id,
+            customer_id=customer_id,
+            action="sales_update_course_amount",
+            amount_delta=body.amount_paid,
+            operator_user_id=current_user.id,
+            operator_role="sales",
+        )
+    )
+    await db.commit()
+    return {"message": "ok"}
 
 
 @router.put("/customers/{customer_id}/courses/{enrollment_id}/status")
@@ -593,22 +849,24 @@ async def update_sales_course_status(
         raise HTTPException(400, "销售仅可设置前4种状态")
 
     await _get_my_customer(customer_id, current_user, db)
-
-    row = await db.execute(
-        select(CustomerCourseEnrollment).where(
-            CustomerCourseEnrollment.id == enrollment_id,
-            CustomerCourseEnrollment.customer_id == customer_id,
-        )
-    )
-    enrollment = row.scalar_one_or_none()
-    if enrollment is None:
-        raise HTTPException(404, "课程记录不存在")
+    enrollment = await _get_enrollment_or_404(db, customer_id, enrollment_id)
 
     enrollment.status = body.status
     enrollment.status_updated_by = current_user.id
     enrollment.status_updated_role = "sales"
     enrollment.status_updated_at = datetime.utcnow()
     enrollment.updated_at = datetime.utcnow()
+    db.add(
+        AuditLog(
+            resource_type="course_enrollment",
+            resource_id=enrollment.id,
+            customer_id=customer_id,
+            action="sales_update_course_status",
+            changes=body.status,
+            operator_user_id=current_user.id,
+            operator_role="sales",
+        )
+    )
     await db.commit()
     return {"message": "ok"}
 
@@ -627,11 +885,17 @@ async def create_sales_course(
     if product is None:
         raise HTTPException(404, "产品不存在")
 
+    now = datetime.utcnow()
+    amount = body.amount if body.amount is not None else product.price
     order = Order(
         customer_id=customer_id,
         product_id=body.product_id,
         sales_user_id=current_user.id,
-        amount=product.price,
+        amount=amount,
+        list_price=product.price,
+        deal_price=amount,
+        refund_total=0,
+        status="active",
     )
     db.add(order)
     await db.flush()
@@ -650,11 +914,23 @@ async def create_sales_course(
             customer_id=customer_id,
             order_id=order.id,
             product_id=body.product_id,
-            amount_paid=product.price,
+            amount_paid=amount,
             status="purchased_not_started",
             status_updated_by=current_user.id,
             status_updated_role="sales",
-            status_updated_at=datetime.utcnow(),
+            status_updated_at=now,
+        )
+    )
+    db.add(
+        AuditLog(
+            resource_type="course_enrollment",
+            resource_id=order.id,
+            customer_id=customer_id,
+            action="sales_add_course",
+            amount_delta=amount,
+            operator_user_id=current_user.id,
+            operator_role="sales",
+            note=product.name,
         )
     )
     await db.commit()
@@ -668,7 +944,7 @@ async def list_sales_products(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_role("sales")),
 ):
-    """销售可看的产品列表（仅上架产品）"""
+    """销售可见的产品列表（仅上架产品）。"""
     result = await db.execute(
         select(Product).where(Product.status == "active").order_by(Product.name)
     )
@@ -683,7 +959,7 @@ async def list_sales_tags(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_role("sales")),
 ):
-    """销售可用的全部标签（含分类颜色）"""
+    """销售可用标签列表（含分类颜色）。"""
     from app.models.tag import TagCategory, Tag as TagModel
 
     result = await db.execute(
@@ -707,7 +983,7 @@ async def sales_dashboard(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_role("sales")),
 ):
-    """销售数据复盘：6 个核心数字 + 本月成交清单"""
+    """销售数据复盘：6 个核心指标 + 本月成交清单。"""
     from calendar import monthrange
     from datetime import date as date_type
 
@@ -722,7 +998,7 @@ async def sales_dashboard(
 
     owned = await _get_owned_account_ids(current_user, db)
 
-    # 本月新增客户数
+    # 鏈湀鏂板瀹㈡埛鏁?
     new_this_month = 0
     if owned:
         r = await db.execute(
@@ -733,7 +1009,7 @@ async def sales_dashboard(
         )
         new_this_month = r.scalar() or 0
 
-    # 昨日新增
+    # 鏄ㄦ棩鏂板
     new_yesterday = 0
     if owned:
         r = await db.execute(
@@ -745,7 +1021,7 @@ async def sales_dashboard(
         )
         new_yesterday = r.scalar() or 0
 
-    # 本月成交数 / 金额 (排除当月退款的订单)
+    # 鏈湀鎴愪氦鏁?/ 閲戦 (鎺掗櫎褰撴湀閫€娆剧殑璁㈠崟)
     orders_this_month = 0
     amount_this_month = 0
     if owned:
@@ -761,11 +1037,11 @@ async def sales_dashboard(
                 orders_this_month += 1
                 amount_this_month += o.amount
             elif o.refunded_at.month != o.created_at.month or o.refunded_at.year != o.created_at.year:
-                # 退款不在当月 → 当月数据保留
+                # 閫€娆句笉鍦ㄥ綋鏈?鈫?褰撴湀鏁版嵁淇濈暀
                 orders_this_month += 1
                 amount_this_month += o.amount
 
-    # 双月转化率
+    # 鍙屾湀杞寲鐜?
     dual_customers = 0
     dual_orders_customers = 0
     if owned:
@@ -786,7 +1062,7 @@ async def sales_dashboard(
 
     conversion_rate = round((dual_orders_customers / dual_customers * 100), 1) if dual_customers > 0 else 0
 
-    # 客户总数
+    # 瀹㈡埛鎬绘暟
     total_customers = 0
     if owned:
         r = await db.execute(
@@ -794,7 +1070,7 @@ async def sales_dashboard(
         )
         total_customers = r.scalar() or 0
 
-    # ── 本月成交清单 ──
+    # 鈹€鈹€ 鏈湀鎴愪氦娓呭崟 鈹€鈹€
     monthly_orders = []
     if owned:
         r = await db.execute(
@@ -844,13 +1120,13 @@ async def sales_dashboard(
             is_refunded = o.refunded_at is not None
             display_amount = o.amount
             if is_refunded and o.refunded_at.date() <= this_month_end and o.refunded_at.month == o.created_at.month:
-                display_amount = 0  # 当月退款的当月订单不显示金额
+                display_amount = 0  # 褰撴湀閫€娆剧殑褰撴湀璁㈠崟涓嶆樉绀洪噾棰?
 
             monthly_orders.append({
                 "order_id": o.id,
                 "order_date": o.created_at.isoformat()[:10],
                 "customer_name": cust.name,
-                "customer_info": (cust.industry or "") + ("·" + cust.region if cust.region else ""),
+                "customer_info": (cust.industry or "") + ("路" + cust.region if cust.region else ""),
                 "product_name": prod.name if prod else "已删除",
                 "product_price": o.amount,
                 "amount": display_amount if not is_refunded else o.amount,
@@ -871,3 +1147,4 @@ async def sales_dashboard(
         },
         "monthly_orders": monthly_orders,
     }
+

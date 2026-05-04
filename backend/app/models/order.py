@@ -13,9 +13,14 @@ class Order(SQLModel, table=True):
     product_id: str = Field(foreign_key="products.id", max_length=36)
     sales_user_id: str = Field(foreign_key="users.id", max_length=36)
     amount: int = Field(default=0)
+    list_price: int = Field(default=0)
+    deal_price: int = Field(default=0)
+    refund_total: int = Field(default=0)
+    status: str = Field(default="active", max_length=30)
     refunded_at: datetime | None = Field(default=None)
 
     created_at: datetime = Field(default_factory=utcnow)
+    updated_at: datetime = Field(default_factory=utcnow)
 
 
 class CustomerProduct(SQLModel, table=True):

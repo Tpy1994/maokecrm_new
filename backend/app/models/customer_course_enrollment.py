@@ -17,6 +17,7 @@ class CustomerCourseEnrollment(SQLModel, table=True):
     status_updated_by: str | None = Field(default=None, foreign_key="users.id", max_length=36)
     status_updated_role: str | None = Field(default=None, max_length=20)
     status_updated_at: datetime | None = Field(default=None)
+    refunded_at: datetime | None = Field(default=None)
 
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)
