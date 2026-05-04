@@ -13,6 +13,7 @@ const menuItems = [
   { key: '/admin/tags', label: '标签管理' },
   { key: '/admin/products', label: '产品管理' },
   { key: '/admin/tuition-writeoff', label: '销课与充值' },
+  { key: '/admin/audit-logs', label: '操作日志' },
 ]
 
 const contentWidth = 1280

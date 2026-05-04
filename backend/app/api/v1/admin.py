@@ -1,4 +1,4 @@
-﻿from datetime import datetime
+from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
@@ -142,9 +142,45 @@ class AdminTuitionWriteoffSummaryOut(BaseModel):
     total_pending: int
 
 
+class AdminAuditLogItemOut(BaseModel):
+    id: str
+    created_at: str
+    action: str
+    amount_delta: int | None
+    note: str | None
+    resource_type: str
+    resource_id: str
+    changes: str | None
+    related_event_id: str | None
+    operator_user_id: str | None
+    operator_role: str | None
+    operator_name: str | None
+    customer_id: str | None
+    customer_name: str | None
+
+
+class AdminAuditLogListOut(BaseModel):
+    total: int
+    items: list[AdminAuditLogItemOut]
+
+
 ADMIN_COURSE_STATUSES = {
     "admin_marked_completed",
     "admin_marked_completed_refunded",
+}
+
+AUDIT_ACTIONS = {
+    "admin_writeoff_course_created",
+    "admin_writeoff_course_refunded",
+    "gift_request_approved",
+    "gift_request_rejected",
+}
+
+AUDIT_ACTION_LABELS = {
+    "admin_writeoff_course_created": "新增管理员销课",
+    "admin_writeoff_course_refunded": "管理员销课退款",
+    "gift_request_approved": "赠送学费通过",
+    "gift_request_rejected": "赠送学费驳回",
 }
 
 
@@ -408,6 +444,93 @@ async def list_tuition_writeoff_customers(
 
     out.sort(key=lambda i: (i.pending_gift_request_count > 0, i.pending_gift_request_count, i.customer_name), reverse=True)
     return out
+
+
+@router.get("/audit-logs", response_model=AdminAuditLogListOut)
+async def list_admin_audit_logs(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    action: str | None = Query(None),
+    operator_user_id: str | None = Query(None),
+    days: int | None = Query(None),
+    keyword: str | None = Query(None),
+    customer_keyword: str | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(require_role("admin")),
+):
+    if action and action not in AUDIT_ACTIONS:
+        raise HTTPException(400, "invalid action")
+    if days is not None and days not in {7, 30}:
+        raise HTTPException(400, "days must be 7 or 30")
+
+    filters = [AuditLog.action.in_(AUDIT_ACTIONS)]
+    if action:
+        filters.append(AuditLog.action == action)
+    if operator_user_id:
+        filters.append(AuditLog.operator_user_id == operator_user_id)
+    if days:
+        start_at = datetime.utcnow() - timedelta(days=days)
+        filters.append(AuditLog.created_at >= start_at)
+
+    rows = await db.execute(
+        select(AuditLog)
+        .where(*filters)
+        .order_by(AuditLog.created_at.desc())
+    )
+    logs = rows.scalars().all()
+
+    operator_ids = sorted({log.operator_user_id for log in logs if log.operator_user_id})
+    customer_ids_page = sorted({log.customer_id for log in logs if log.customer_id})
+
+    operator_map: dict[str, str] = {}
+    if operator_ids:
+        op_rows = await db.execute(select(User.id, User.name).where(User.id.in_(operator_ids)))
+        operator_map = {uid: name for uid, name in op_rows.all()}
+
+    customer_map: dict[str, str] = {}
+    if customer_ids_page:
+        c_rows = await db.execute(select(Customer.id, Customer.name).where(Customer.id.in_(customer_ids_page)))
+        customer_map = {cid: name for cid, name in c_rows.all()}
+
+    search_text = (keyword or customer_keyword or "").strip().lower()
+    items = []
+    for log in logs:
+        operator_name = operator_map.get(log.operator_user_id or "", None)
+        customer_name = customer_map.get(log.customer_id or "", None)
+        if search_text:
+            action_label = AUDIT_ACTION_LABELS.get(log.action, log.action)
+            searchable = [
+                log.action.lower(),
+                action_label.lower(),
+                (log.note or "").lower(),
+                (operator_name or "").lower(),
+                (customer_name or "").lower(),
+            ]
+            if not any(search_text in text for text in searchable):
+                continue
+        items.append(
+            AdminAuditLogItemOut(
+                id=log.id,
+                created_at=log.created_at.isoformat(),
+                action=log.action,
+                amount_delta=log.amount_delta,
+                note=log.note,
+                resource_type=log.resource_type,
+                resource_id=log.resource_id,
+                changes=log.changes,
+                related_event_id=log.related_event_id,
+                operator_user_id=log.operator_user_id,
+                operator_role=log.operator_role,
+                operator_name=operator_name,
+                customer_id=log.customer_id,
+                customer_name=customer_name,
+            )
+        )
+
+    total = len(items)
+    start = (page - 1) * page_size
+    end = start + page_size
+    return AdminAuditLogListOut(total=total, items=items[start:end])
 
 
 @router.post("/customers/{customer_id}/writeoff-courses", status_code=201)
@@ -809,5 +932,6 @@ async def admin_dashboard(
         product_deals=product_deals,
         consultant_delivery=consultant_delivery,
     )
+
 
 

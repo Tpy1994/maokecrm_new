@@ -14,6 +14,7 @@ import AdminPoolPage from './pages/admin/AdminPoolPage'
 import AdminCustomersPage from './pages/admin/AdminCustomersPage'
 import AdminDataReviewPage from './pages/admin/AdminDataReviewPage'
 import AdminTuitionAndWriteoffPage from './pages/admin/AdminTuitionAndWriteoffPage'
+import AdminAuditLogsPage from './pages/admin/AdminAuditLogsPage'
 import CustomerList from './pages/sales/CustomerList'
 import DataReview from './pages/sales/DataReview'
 import ConsultantCustomersPage from './pages/consultant/ConsultantCustomersPage'
@@ -54,6 +55,7 @@ export default function App() {
               <Route path="/admin/tags" element={<TagsPage />} />
               <Route path="/admin/products" element={<ProductsPage />} />
               <Route path="/admin/tuition-writeoff" element={<AdminTuitionAndWriteoffPage />} />
+              <Route path="/admin/audit-logs" element={<AdminAuditLogsPage />} />
             </Route>
           </Route>
 

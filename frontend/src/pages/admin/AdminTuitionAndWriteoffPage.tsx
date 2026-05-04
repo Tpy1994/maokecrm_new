@@ -75,7 +75,6 @@ const COURSE_STATUS_META: Record<CourseStatusKey, { label: string; bg: string; c
 }
 
 const y2f = (cents: number) => `￥${(cents / 100).toLocaleString()}`
-
 export default function AdminTuitionAndWriteoffPage() {
   const [customers, setCustomers] = useState<CustomerItem[]>([])
   const [selectedCustomerId, setSelectedCustomerId] = useState<string | null>(null)
@@ -265,7 +264,7 @@ export default function AdminTuitionAndWriteoffPage() {
           size='small'
           rowKey='customer_id'
           dataSource={customers}
-          pagination={{ pageSize: 8 }}
+          pagination={{ pageSize: 8, size: 'small' }}
           columns={[
             {
               title: '客户',
@@ -443,6 +442,7 @@ export default function AdminTuitionAndWriteoffPage() {
           />
         </div>
       </Modal>
+
     </div>
   )
 }
