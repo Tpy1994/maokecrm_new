@@ -285,36 +285,6 @@ async def _write_audit_log(
     )
 
 
-async def _write_audit_log(
-    db: AsyncSession,
-    *,
-    resource_type: str,
-    resource_id: str,
-    action: str,
-    customer_id: str | None = None,
-    changes: str | None = None,
-    amount_delta: int | None = None,
-    operator_user_id: str | None = None,
-    operator_role: str | None = None,
-    note: str | None = None,
-    related_event_id: str | None = None,
-) -> None:
-    db.add(
-        AuditLog(
-            resource_type=resource_type,
-            resource_id=resource_id,
-            customer_id=customer_id,
-            action=action,
-            changes=changes,
-            amount_delta=amount_delta,
-            operator_user_id=operator_user_id,
-            operator_role=operator_role,
-            note=note,
-            related_event_id=related_event_id,
-        )
-    )
-
-
 async def _get_enrollment_or_404(
     db: AsyncSession,
     customer_id: str,
@@ -383,7 +353,7 @@ async def create_link_account_by_sales(
 
     db.add(LinkAccount(account_id=account_id, owner_id=current_user.id))
     await db.commit()
-    return {"message": "鏂板鎴愬姛"}
+    return {"message": "新增成功"}
 
 
 # ===================== Customers =====================
@@ -624,7 +594,7 @@ async def purchase_product(
         )
     )
     await db.commit()
-    return {"order_id": order.id, "message": "鎴愪氦鎴愬姛"}
+    return {"order_id": order.id, "message": "成交成功"}
 
 
 @router.post("/orders/{order_id}/refund")
@@ -998,7 +968,7 @@ async def sales_dashboard(
 
     owned = await _get_owned_account_ids(current_user, db)
 
-    # 鏈湀鏂板瀹㈡埛鏁?
+    # 本月新增客户数
     new_this_month = 0
     if owned:
         r = await db.execute(
@@ -1009,7 +979,7 @@ async def sales_dashboard(
         )
         new_this_month = r.scalar() or 0
 
-    # 鏄ㄦ棩鏂板
+    # 昨日新增
     new_yesterday = 0
     if owned:
         r = await db.execute(
@@ -1021,7 +991,7 @@ async def sales_dashboard(
         )
         new_yesterday = r.scalar() or 0
 
-    # 鏈湀鎴愪氦鏁?/ 閲戦 (鎺掗櫎褰撴湀閫€娆剧殑璁㈠崟)
+    # 本月成交数/金额（按净额口径）
     orders_this_month = 0
     amount_this_month = 0
     if owned:
@@ -1033,15 +1003,16 @@ async def sales_dashboard(
             )
         )
         for o in r.scalars().all():
+            net_amount = max(0, (o.amount or 0) - (o.refund_total or 0))
             if o.refunded_at is None:
                 orders_this_month += 1
-                amount_this_month += o.amount
+                amount_this_month += net_amount
             elif o.refunded_at.month != o.created_at.month or o.refunded_at.year != o.created_at.year:
-                # 閫€娆句笉鍦ㄥ綋鏈?鈫?褰撴湀鏁版嵁淇濈暀
+                # 退款不在当月，当月成交数保留，金额按净额
                 orders_this_month += 1
-                amount_this_month += o.amount
+                amount_this_month += net_amount
 
-    # 鍙屾湀杞寲鐜?
+    # 双月转化率
     dual_customers = 0
     dual_orders_customers = 0
     if owned:
@@ -1062,7 +1033,7 @@ async def sales_dashboard(
 
     conversion_rate = round((dual_orders_customers / dual_customers * 100), 1) if dual_customers > 0 else 0
 
-    # 瀹㈡埛鎬绘暟
+    # 客户总数
     total_customers = 0
     if owned:
         r = await db.execute(
@@ -1070,7 +1041,7 @@ async def sales_dashboard(
         )
         total_customers = r.scalar() or 0
 
-    # 鈹€鈹€ 鏈湀鎴愪氦娓呭崟 鈹€鈹€
+    # 本月成交清单
     monthly_orders = []
     if owned:
         r = await db.execute(
@@ -1129,7 +1100,7 @@ async def sales_dashboard(
                 "customer_info": (cust.industry or "") + ("路" + cust.region if cust.region else ""),
                 "product_name": prod.name if prod else "已删除",
                 "product_price": o.amount,
-                "amount": display_amount if not is_refunded else o.amount,
+                "amount": max(0, (o.amount or 0) - (o.refund_total or 0)),
                 "is_refunded": is_refunded,
                 "is_first_purchase": is_first,
                 "link_account_name": la_name,
