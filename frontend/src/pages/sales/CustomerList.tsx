@@ -1,5 +1,5 @@
 ﻿import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Button, DatePicker, Form, Input, Modal, Select, Table, Tag, message } from 'antd'
+import { Button, DatePicker, Form, Input, InputNumber, Modal, Select, Table, Tag, message } from 'antd'
 import dayjs from 'dayjs'
 import { api } from '../../api/client'
 
@@ -7,7 +7,7 @@ interface LinkAccount { id: string; account_id: string; customer_count: number; 
 interface CustomerTag { id: string; name: string; color: string }
 interface TagOption { id: string; name: string; color: string; category_name: string }
 interface ProductOption { id: string; name: string; price: number; is_consultation: boolean; status: string }
-interface CourseItem { enrollment_id: string; product_id: string; product_name: string; amount_paid: number; status: string }
+interface CourseItem { enrollment_id: string; product_id: string; product_name: string; amount_paid: number; refunded_amount: number; status: string }
 interface Customer {
   id: string
   name: string
@@ -79,6 +79,8 @@ export default function CustomerList() {
   const [courseTarget, setCourseTarget] = useState<Customer | null>(null)
   const [productOptions, setProductOptions] = useState<ProductOption[]>([])
   const [selectedProductId, setSelectedProductId] = useState<string | null>(null)
+  const [newCourseAmount, setNewCourseAmount] = useState<number | null>(null)
+  const [activeCourseKey, setActiveCourseKey] = useState<string | null>(null)
 
   const [selectedStatusFilter, setSelectedStatusFilter] = useState<CourseStatusKey>('purchased_not_started')
 
@@ -156,16 +158,35 @@ export default function CustomerList() {
 
   const addCourse = async () => {
     if (!courseTarget || !selectedProductId) return
-    await api.post(`/sales/customers/${courseTarget.id}/courses`, { product_id: selectedProductId })
+    await api.post(`/sales/customers/${courseTarget.id}/courses`, { product_id: selectedProductId, amount: newCourseAmount ?? undefined })
     message.success('已购课程已新增，默认状态为已购未上')
     setCourseTarget(null)
     setSelectedProductId(null)
+    setNewCourseAmount(null)
     fetchCustomers()
   }
 
   const updateCourseStatus = async (customerId: string, enrollmentId: string, status: CourseStatusKey) => {
     if (!salesStatusSet.has(status)) return
     await api.put(`/sales/customers/${customerId}/courses/${enrollmentId}/status`, { status })
+    fetchCustomers()
+  }
+
+  const updateCourseAmount = async (customerId: string, enrollmentId: string, amountPaid: number) => {
+    await api.put(`/sales/customers/${customerId}/courses/${enrollmentId}/amount`, { amount_paid: amountPaid })
+    message.success('课程实付金额已更新')
+    fetchCustomers()
+  }
+
+  const refundCourse = async (customerId: string, enrollmentId: string, amount: number) => {
+    await api.post(`/sales/customers/${customerId}/courses/${enrollmentId}/refund`, { refund_amount: amount })
+    message.success('退款成功')
+    fetchCustomers()
+  }
+
+  const revertRefundCourse = async (customerId: string, enrollmentId: string) => {
+    await api.post(`/sales/customers/${customerId}/courses/${enrollmentId}/refund/revert`, {})
+    message.success('已撤销退款')
     fetchCustomers()
   }
 
@@ -192,29 +213,63 @@ export default function CustomerList() {
           {r.courses.map((c) => {
             const meta = COURSE_STATUS_META[c.status as CourseStatusKey]
             const isRefunded = c.status.includes('refunded')
+            const courseKey = `${r.id}:${c.enrollment_id}`
+            const isActive = activeCourseKey === courseKey
             return (
-              <button
-                key={c.enrollment_id}
-                onClick={() => updateCourseStatus(r.id, c.enrollment_id, selectedStatusFilter)}
-                style={{
-                  border: `1px solid ${meta?.border || '#d9d9d9'}`,
-                  background: meta?.bg || '#f5f5f5',
-                  color: meta?.color || '#595959',
-                  borderRadius: 4,
-                  padding: '1px 6px',
-                  textAlign: 'left',
-                  cursor: 'pointer',
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: 6,
-                  width: 'fit-content',
-                  maxWidth: '100%',
-                  fontSize: 11,
-                }}
-              >
-                <span style={{ textDecoration: isRefunded ? 'line-through' : 'none', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 150 }}>{c.product_name}</span>
-                <span style={{ opacity: 0.75, fontSize: 10 }}>×</span>
-              </button>
+              <div key={c.enrollment_id} style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 4 }}>
+                <button
+                  onClick={() => {
+                    setActiveCourseKey(courseKey)
+                    updateCourseStatus(r.id, c.enrollment_id, selectedStatusFilter)
+                  }}
+                  style={{
+                    border: `1px solid ${isActive ? '#3B82F6' : (meta?.border || '#d9d9d9')}`,
+                    background: meta?.bg || '#f5f5f5',
+                    color: meta?.color || '#595959',
+                    borderRadius: 4,
+                    padding: '1px 6px',
+                    textAlign: 'left',
+                    cursor: 'pointer',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 6,
+                    width: 'fit-content',
+                    maxWidth: '100%',
+                    fontSize: 11,
+                  }}
+                >
+                  <span style={{ textDecoration: isRefunded ? 'line-through' : 'none', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 150 }}>{c.product_name}</span>
+                </button>
+                {isActive ? (
+                  <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <button
+                      onClick={async () => {
+                        const nextValue = window.prompt('请输入实付金额（元）', `${(c.amount_paid / 100).toFixed(2)}`)
+                        if (nextValue === null) return
+                        const parsed = Number(nextValue)
+                        if (Number.isNaN(parsed) || parsed < 0) { message.error('金额格式错误'); return }
+                        await updateCourseAmount(r.id, c.enrollment_id, Math.round(parsed * 100))
+                      }}
+                      style={{ border: '1px solid #d9d9d9', background: '#fff', borderRadius: 4, fontSize: 10, padding: '0 6px', cursor: 'pointer' }}
+                    >改价</button>
+                    <button
+                      onClick={async () => {
+                        const nextValue = window.prompt('请输入退款金额（元）', `${Math.max((c.amount_paid - c.refunded_amount) / 100, 0)}`)
+                        if (nextValue === null) return
+                        const parsed = Number(nextValue)
+                        if (Number.isNaN(parsed) || parsed <= 0) { message.error('退款金额必须大于0'); return }
+                        await refundCourse(r.id, c.enrollment_id, Math.round(parsed * 100))
+                      }}
+                      style={{ border: '1px solid #fecaca', background: '#fff1f2', color: '#b91c1c', borderRadius: 4, fontSize: 10, padding: '0 6px', cursor: 'pointer' }}
+                    >退款</button>
+                    <button
+                      onClick={() => revertRefundCourse(r.id, c.enrollment_id)}
+                      style={{ border: '1px solid #bfdbfe', background: '#eff6ff', color: '#1d4ed8', borderRadius: 4, fontSize: 10, padding: '0 6px', cursor: 'pointer' }}
+                    >撤销退款</button>
+                    <span style={{ fontSize: 10, color: '#6b7280' }}>{y2f(c.amount_paid)} / 已退 {y2f(c.refunded_amount)}</span>
+                  </div>
+                ) : null}
+              </div>
             )
           })}
           <button onClick={() => { setCourseTarget(r); setSelectedProductId(null); fetchProducts() }} style={{ border: '1px dashed #E8E8E3', background: 'none', cursor: 'pointer', color: '#8E8E8E', fontSize: 10, padding: '0 5px', borderRadius: 3, width: 'fit-content', lineHeight: '14px' }}>+</button>
@@ -407,12 +462,26 @@ export default function CustomerList() {
         </Select>
       </Modal>
 
-      <Modal title='新增已购课程' open={!!courseTarget} onOk={addCourse} onCancel={() => { setCourseTarget(null); setSelectedProductId(null) }}>
-        <Select value={selectedProductId} onChange={setSelectedProductId} style={{ width: '100%' }} placeholder='选择课程'>
+      <Modal title='新增已购课程' open={!!courseTarget} onOk={addCourse} onCancel={() => { setCourseTarget(null); setSelectedProductId(null); setNewCourseAmount(null) }}>
+        <div style={{ display: 'grid', gap: 10 }}>
+        <Select value={selectedProductId} onChange={(v) => {
+          setSelectedProductId(v)
+          const p = productOptions.find((item) => item.id === v)
+          setNewCourseAmount(p?.price ?? null)
+        }} style={{ width: '100%' }} placeholder='选择课程'>
           {productOptions.filter((p) => p.status === 'active').map((p) => (
             <Select.Option key={p.id} value={p.id}>{p.name}（{y2f(p.price)}）</Select.Option>
           ))}
         </Select>
+        <InputNumber
+          min={0}
+          precision={2}
+          style={{ width: '100%' }}
+          addonBefore='实付金额(元)'
+          value={newCourseAmount === null ? null : newCourseAmount / 100}
+          onChange={(v) => setNewCourseAmount(v === null ? null : Math.round(Number(v) * 100))}
+        />
+        </div>
       </Modal>
     </div>
   )
