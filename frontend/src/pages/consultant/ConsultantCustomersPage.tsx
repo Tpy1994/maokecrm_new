@@ -1,6 +1,7 @@
 ﻿import { useEffect, useMemo, useState } from 'react'
 import { Button, DatePicker, Form, Input, InputNumber, message, Modal, Popconfirm, Select, Table, Tag } from 'antd'
 import dayjs from 'dayjs'
+import { useNavigate } from 'react-router-dom'
 import { api } from '../../api/client'
 
 interface Badge { consultant_id: string; consultant_name: string; is_me: boolean }
@@ -47,6 +48,7 @@ const toneBg: Record<string, string> = {
 }
 
 export default function ConsultantCustomersPage() {
+  const navigate = useNavigate()
   const [rows, setRows] = useState<RowItem[]>([])
   const [loading, setLoading] = useState(false)
   const [keyword, setKeyword] = useState('')
@@ -349,17 +351,12 @@ export default function ConsultantCustomersPage() {
       dataIndex: 'consultation_count',
       width: 120,
       render: (v: number, r: RowItem) => (
-        <Select
-          size="small"
-          value={v}
-          style={{ width: 64 }}
-          options={Array.from({ length: 21 }, (_, i) => ({ value: i, label: `${i}` }))}
-          onChange={async (val) => {
-            await api.put(`/consultant/customers/${r.customer_id}`, { consultation_count: val })
-            setRows((prev) => prev.map((item) => (item.customer_id === r.customer_id ? { ...item, consultation_count: val } : item)))
-            message.success('咨询次数已更新')
-          }}
-        />
+        <button
+          onClick={() => navigate(`/consultant/customers/${r.customer_id}/logs`)}
+          style={{ border: 'none', background: 'none', cursor: 'pointer', color: '#2563eb', fontWeight: 700, padding: 0 }}
+        >
+          {v}
+        </button>
       ),
     },
     {

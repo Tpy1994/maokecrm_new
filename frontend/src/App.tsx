@@ -18,6 +18,7 @@ import DataReview from './pages/sales/DataReview'
 import ConsultantCustomersPage from './pages/consultant/ConsultantCustomersPage'
 import ConsultantDataReviewPage from './pages/consultant/ConsultantDataReviewPage'
 import ConsultantPoolPage from './pages/consultant/ConsultantPoolPage'
+import ConsultantCustomerLogsPage from './pages/consultant/ConsultantCustomerLogsPage'
 
 export default function App() {
   return (
@@ -36,6 +37,7 @@ export default function App() {
           <Route element={<ProtectedRoute allowedRoles={['consultant']} />}>
             <Route element={<ConsultantLayout />}>
               <Route path="/consultant/customers" element={<ConsultantCustomersPage />} />
+              <Route path="/consultant/customers/:customerId/logs" element={<ConsultantCustomerLogsPage />} />
               <Route path="/consultant/data-review" element={<ConsultantDataReviewPage />} />
               <Route path="/consultant/pool" element={<ConsultantPoolPage />} />
             </Route>

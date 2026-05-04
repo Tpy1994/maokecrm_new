@@ -1,3 +1,4 @@
+import json
 from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -6,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import and_, func, select
 
 from app.core.deps import get_db, require_role
+from app.models.audit_log import AuditLog
 from app.models.consultant_customer import ConsultantCustomer
 from app.models.consultation_log import ConsultationLog
 from app.models.customer import Customer
@@ -81,11 +83,13 @@ class LogItemOut(BaseModel):
     consultant_id: str
     consultant_name: str
     is_me: bool
+    editable: bool
     log_date: str
     duration: int
     summary: str | None
     content: str | None
     created_at: str
+    updated_at: str
 
 
 class UpdateConsultantCustomerIn(BaseModel):
@@ -259,7 +263,7 @@ async def _ensure_consultant_tag(tag_id: str, db: AsyncSession) -> Tag:
 async def consultant_customers(
     keyword: str | None = Query(None),
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_role("consultant")),
+    current_user: User = Depends(require_role("admin", "sales", "consultant")),
 ):
     rows = await db.execute(
         select(ConsultantCustomer, Customer)
@@ -602,10 +606,11 @@ async def join_pool_service(
 
 
 @router.get("/customers/{customer_id}/logs", response_model=list[LogItemOut])
+@router.get("/customers/{customer_id}/consultation-logs", response_model=list[LogItemOut])
 async def list_logs(
     customer_id: str,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_role("consultant")),
+    current_user: User = Depends(require_role("admin", "sales", "consultant")),
 ):
     rows = await db.execute(
         select(ConsultationLog, User)
@@ -620,11 +625,13 @@ async def list_logs(
             consultant_id=u.id,
             consultant_name=u.name,
             is_me=(log.consultant_id == current_user.id),
+            editable=(current_user.role == "consultant" and log.consultant_id == current_user.id),
             log_date=log.log_date.isoformat(),
             duration=log.duration,
             summary=log.summary,
             content=log.content,
             created_at=log.created_at.isoformat(),
+            updated_at=log.updated_at.isoformat(),
         )
         for log, u in rows.all()
     ]
@@ -650,6 +657,21 @@ async def create_log(
     db.add(log)
     await db.commit()
     await db.refresh(log)
+    await _write_audit_log(
+        db,
+        resource_type="consultation_log",
+        resource_id=log.id,
+        customer_id=customer_id,
+        action="log_created",
+        operator=current_user,
+        changes={
+            "log_date": log.log_date.isoformat(),
+            "duration": log.duration,
+            "summary": log.summary,
+            "content": log.content,
+        },
+    )
+    await db.commit()
 
     return LogItemOut(
         id=log.id,
@@ -657,11 +679,13 @@ async def create_log(
         consultant_id=current_user.id,
         consultant_name=current_user.name,
         is_me=True,
+        editable=True,
         log_date=log.log_date.isoformat(),
         duration=log.duration,
         summary=log.summary,
         content=log.content,
         created_at=log.created_at.isoformat(),
+        updated_at=log.updated_at.isoformat(),
     )
 
 
@@ -675,9 +699,16 @@ async def update_log(
     row = await db.execute(select(ConsultationLog).where(ConsultationLog.id == log_id))
     log = row.scalar_one_or_none()
     if log is None:
-        raise HTTPException(404, "日志不存在")
+        raise HTTPException(404, "?????")
     if log.consultant_id != current_user.id:
-        raise HTTPException(403, "只能编辑自己的日志")
+        raise HTTPException(403, "?????????")
+
+    before = {
+        "log_date": log.log_date.isoformat(),
+        "duration": log.duration,
+        "summary": log.summary,
+        "content": log.content,
+    }
 
     log.log_date = date.fromisoformat(body.log_date)
     log.duration = body.duration
@@ -687,6 +718,24 @@ async def update_log(
 
     await db.commit()
     await db.refresh(log)
+    await _write_audit_log(
+        db,
+        resource_type="consultation_log",
+        resource_id=log.id,
+        customer_id=log.customer_id,
+        action="log_updated",
+        operator=current_user,
+        changes={
+            "before": before,
+            "after": {
+                "log_date": log.log_date.isoformat(),
+                "duration": log.duration,
+                "summary": log.summary,
+                "content": log.content,
+            },
+        },
+    )
+    await db.commit()
 
     return LogItemOut(
         id=log.id,
@@ -694,13 +743,14 @@ async def update_log(
         consultant_id=current_user.id,
         consultant_name=current_user.name,
         is_me=True,
+        editable=True,
         log_date=log.log_date.isoformat(),
         duration=log.duration,
         summary=log.summary,
         content=log.content,
         created_at=log.created_at.isoformat(),
+        updated_at=log.updated_at.isoformat(),
     )
-
 
 @router.get("/dashboard", response_model=DashboardOut)
 async def consultant_dashboard(
