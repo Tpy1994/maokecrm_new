@@ -545,7 +545,7 @@ export default function CustomerList() {
       </div>
 
       <div style={{ background: '#fff', border: '1px solid #e8e8e3', borderRadius: 10, padding: 14, marginBottom: 14 }}>
-        <div style={{ color: '#595959', fontSize: 13, marginBottom: 8 }}>已购课程标签的 6 种状态（仅展示）（仅展示）</div>
+        <div style={{ color: '#595959', fontSize: 13, marginBottom: 8 }}>已购课程标签的 6 种状态（仅展示）</div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(220px, 1fr))', gap: 10 }}>
           {([
             'purchased_not_started',
