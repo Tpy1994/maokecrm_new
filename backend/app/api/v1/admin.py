@@ -1,10 +1,11 @@
-from datetime import datetime
+﻿from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 from sqlalchemy import and_
+from sqlalchemy.orm import aliased
 
 from app.api.v1.consultant import (
     ConsultantBadgeOut,
@@ -29,6 +30,8 @@ from app.models.product import Product
 from app.models.tag import CustomerTag, Tag, TagCategory
 from app.models.user import User
 from app.models.customer_course_enrollment import CustomerCourseEnrollment
+from app.models.tuition_gift_request import TuitionGiftRequest
+from app.models.audit_log import AuditLog
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -81,10 +84,382 @@ class AdminCourseStatusUpdateIn(BaseModel):
     status: str
 
 
+class TuitionGiftRequestOut(BaseModel):
+    id: str
+    customer_id: str
+    customer_name: str
+    sales_user_name: str | None
+    amount: int
+    sales_note: str | None
+    admin_note: str | None
+    status: str
+    reviewed_by_user_name: str | None = None
+    reviewed_at: str | None = None
+    created_at: str
+
+
+class TuitionGiftReviewIn(BaseModel):
+    admin_note: str | None = None
+
+
+class AdminWriteoffCourseIn(BaseModel):
+    product_id: str
+    amount: int
+    status: str
+    note: str | None = None
+
+
+class AdminWriteoffCourseOut(BaseModel):
+    enrollment_id: str
+    product_name: str
+    amount_paid: int
+    status: str
+    created_at: str
+
+
+class AdminTuitionWriteoffCustomerOut(BaseModel):
+    customer_id: str
+    customer_name: str
+    phone: str
+    sales_name: str | None
+    total_spent: int
+    gifted_tuition_amount: int
+    tuition_balance: int
+    pending_gift_request_count: int
+    latest_pending_gift_note: str | None
+    courses: list[AdminWriteoffCourseOut]
+
+
+class AdminTuitionWriteoffSummaryOut(BaseModel):
+    total_gifted: int
+    total_spent: int
+    last_month_spent: int
+    total_balance: int
+    total_pending: int
+
+
 ADMIN_COURSE_STATUSES = {
     "admin_marked_completed",
     "admin_marked_completed_refunded",
 }
+
+
+@router.get("/tuition-gift-requests", response_model=list[TuitionGiftRequestOut])
+async def list_tuition_gift_requests(
+    status: str = Query("pending"),
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(require_role("admin")),
+):
+    if status not in {"pending", "approved", "rejected"}:
+        raise HTTPException(400, "invalid status")
+
+    reviewer = aliased(User)
+    rows = await db.execute(
+        select(TuitionGiftRequest, Customer, User.name, reviewer.name)
+        .join(Customer, TuitionGiftRequest.customer_id == Customer.id)
+        .join(User, TuitionGiftRequest.sales_user_id == User.id, isouter=True)
+        .join(reviewer, TuitionGiftRequest.reviewed_by_user_id == reviewer.id, isouter=True)
+        .where(TuitionGiftRequest.status == status)
+        .order_by(TuitionGiftRequest.created_at.desc())
+    )
+    return [
+        TuitionGiftRequestOut(
+            id=req.id,
+            customer_id=customer.id,
+            customer_name=customer.name,
+            sales_user_name=sales_name,
+            amount=req.amount,
+            sales_note=req.sales_note,
+            admin_note=req.admin_note,
+            status=req.status,
+            reviewed_by_user_name=reviewer_name,
+            reviewed_at=req.reviewed_at.isoformat() if req.reviewed_at else None,
+            created_at=req.created_at.isoformat(),
+        )
+        for req, customer, sales_name, reviewer_name in rows.all()
+    ]
+
+
+@router.post("/tuition-gift-requests/{request_id}/approve")
+async def approve_tuition_gift_request(
+    request_id: str,
+    body: TuitionGiftReviewIn,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role("admin")),
+):
+    row = await db.execute(select(TuitionGiftRequest).where(TuitionGiftRequest.id == request_id))
+    req = row.scalar_one_or_none()
+    if req is None:
+        raise HTTPException(404, "申请记录不存在")
+    if req.status != "pending":
+        raise HTTPException(400, "该申请已处理")
+    customer_r = await db.execute(select(Customer).where(Customer.id == req.customer_id))
+    customer = customer_r.scalar_one_or_none()
+    if customer is None:
+        raise HTTPException(404, "客户不存在")
+    req.status = "approved"
+    req.reviewed_by_user_id = current_user.id
+    req.reviewed_at = datetime.utcnow()
+    req.updated_at = datetime.utcnow()
+    req.admin_note = body.admin_note
+    customer.gifted_tuition_amount = max(0, (customer.gifted_tuition_amount or 0) + req.amount)
+    db.add(
+        AuditLog(
+            resource_type="tuition_gift_request",
+            resource_id=req.id,
+            customer_id=customer.id,
+            action="gift_request_approved",
+            amount_delta=req.amount,
+            operator_user_id=current_user.id,
+            operator_role="admin",
+            note=body.admin_note,
+        )
+    )
+    await db.commit()
+    return {"message": "ok"}
+
+
+@router.post("/tuition-gift-requests/{request_id}/reject")
+async def reject_tuition_gift_request(
+    request_id: str,
+    body: TuitionGiftReviewIn,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role("admin")),
+):
+    row = await db.execute(select(TuitionGiftRequest).where(TuitionGiftRequest.id == request_id))
+    req = row.scalar_one_or_none()
+    if req is None:
+        raise HTTPException(404, "申请记录不存在")
+    if req.status != "pending":
+        raise HTTPException(400, "该申请已处理")
+    admin_note = (body.admin_note or "").strip()
+    if not admin_note:
+        raise HTTPException(400, "admin_note is required")
+
+    req.status = "rejected"
+    req.reviewed_by_user_id = current_user.id
+    req.reviewed_at = datetime.utcnow()
+    req.updated_at = datetime.utcnow()
+    req.admin_note = admin_note
+    db.add(
+        AuditLog(
+            resource_type="tuition_gift_request",
+            resource_id=req.id,
+            customer_id=req.customer_id,
+            action="gift_request_rejected",
+            amount_delta=0,
+            operator_user_id=current_user.id,
+            operator_role="admin",
+            note=admin_note,
+        )
+    )
+    await db.commit()
+    return {"message": "ok"}
+
+
+@router.get("/tuition-writeoff/summary", response_model=AdminTuitionWriteoffSummaryOut)
+async def tuition_writeoff_summary(
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(require_role("admin")),
+):
+    customers_r = await db.execute(select(Customer))
+    customers = customers_r.scalars().all()
+
+    now = datetime.utcnow()
+    this_month_start = datetime(now.year, now.month, 1)
+    if now.month == 1:
+        last_month_start = datetime(now.year - 1, 12, 1)
+    else:
+        last_month_start = datetime(now.year, now.month - 1, 1)
+
+    total_gifted = 0
+    total_spent = 0
+    total_balance = 0
+    total_pending = 0
+    last_month_spent = 0
+
+    for c in customers:
+        gifted = int(c.gifted_tuition_amount or 0)
+        spent_r = await db.execute(
+            select(func.coalesce(func.sum(Order.amount - Order.refund_total), 0)).where(Order.customer_id == c.id)
+        )
+        spent = int(spent_r.scalar() or 0)
+        pending_r = await db.execute(
+            select(func.count(TuitionGiftRequest.id)).where(
+                TuitionGiftRequest.customer_id == c.id,
+                TuitionGiftRequest.status == "pending",
+            )
+        )
+        last_month_r = await db.execute(
+            select(func.coalesce(func.sum(Order.amount - Order.refund_total), 0)).where(
+                Order.customer_id == c.id,
+                Order.created_at >= last_month_start,
+                Order.created_at < this_month_start,
+                Order.refunded_at.is_(None),
+            )
+        )
+
+        total_gifted += gifted
+        total_spent += spent
+        total_balance += max(0, gifted - spent)
+        total_pending += int(pending_r.scalar() or 0)
+        last_month_spent += int(last_month_r.scalar() or 0)
+
+    return AdminTuitionWriteoffSummaryOut(
+        total_gifted=total_gifted,
+        total_spent=total_spent,
+        last_month_spent=last_month_spent,
+        total_balance=total_balance,
+        total_pending=total_pending,
+    )
+
+
+@router.get("/tuition-writeoff/customers", response_model=list[AdminTuitionWriteoffCustomerOut])
+async def list_tuition_writeoff_customers(
+    keyword: str | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(require_role("admin")),
+):
+    customers_r = await db.execute(select(Customer).order_by(Customer.updated_at.desc(), Customer.created_at.desc()))
+    customers = customers_r.scalars().all()
+    out: list[AdminTuitionWriteoffCustomerOut] = []
+
+    for c in customers:
+        if keyword:
+            k = keyword.strip().lower()
+            if k and k not in c.name.lower() and k not in c.phone.lower():
+                continue
+
+        sales_r = await db.execute(select(User.name).where(User.id == c.entry_user_id))
+        sales_name = sales_r.scalar_one_or_none()
+
+        spent_r = await db.execute(
+            select(func.coalesce(func.sum(Order.amount - Order.refund_total), 0)).where(Order.customer_id == c.id)
+        )
+        total_spent = int(spent_r.scalar() or 0)
+        gifted = int(c.gifted_tuition_amount or 0)
+        tuition_balance = max(0, gifted - total_spent)
+
+        pending_r = await db.execute(
+            select(TuitionGiftRequest)
+            .where(
+                TuitionGiftRequest.customer_id == c.id,
+                TuitionGiftRequest.status == "pending",
+            )
+            .order_by(TuitionGiftRequest.created_at.desc())
+        )
+        pending_requests = pending_r.scalars().all()
+        pending_count = len(pending_requests)
+        latest_pending_note = pending_requests[0].sales_note if pending_requests else None
+
+        course_r = await db.execute(
+            select(CustomerCourseEnrollment, Product)
+            .join(Product, Product.id == CustomerCourseEnrollment.product_id)
+            .where(CustomerCourseEnrollment.customer_id == c.id)
+            .order_by(CustomerCourseEnrollment.created_at.desc())
+        )
+        courses = [
+            AdminWriteoffCourseOut(
+                enrollment_id=e.id,
+                product_name=p.name,
+                amount_paid=e.amount_paid,
+                status=e.status,
+                created_at=e.created_at.isoformat(),
+            )
+            for e, p in course_r.all()
+        ]
+
+        out.append(
+            AdminTuitionWriteoffCustomerOut(
+                customer_id=c.id,
+                customer_name=c.name,
+                phone=c.phone,
+                sales_name=sales_name,
+                total_spent=total_spent,
+                gifted_tuition_amount=gifted,
+                tuition_balance=tuition_balance,
+                pending_gift_request_count=pending_count,
+                latest_pending_gift_note=latest_pending_note,
+                courses=courses,
+            )
+        )
+
+    out.sort(key=lambda i: (i.pending_gift_request_count > 0, i.pending_gift_request_count, i.customer_name), reverse=True)
+    return out
+
+
+@router.post("/customers/{customer_id}/writeoff-courses", status_code=201)
+async def create_admin_writeoff_course(
+    customer_id: str,
+    body: AdminWriteoffCourseIn,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role("admin")),
+):
+    if body.status not in ADMIN_COURSE_STATUSES:
+        raise HTTPException(400, "status invalid")
+    if body.amount < 0:
+        raise HTTPException(400, "amount must be >= 0")
+
+    customer_r = await db.execute(select(Customer).where(Customer.id == customer_id))
+    customer = customer_r.scalar_one_or_none()
+    if customer is None:
+        raise HTTPException(404, "客户不存在")
+
+    product_r = await db.execute(select(Product).where(Product.id == body.product_id))
+    product = product_r.scalar_one_or_none()
+    if product is None:
+        raise HTTPException(404, "产品不存在")
+
+    now = datetime.utcnow()
+    order = Order(
+        customer_id=customer_id,
+        product_id=body.product_id,
+        sales_user_id=current_user.id,
+        amount=body.amount,
+        list_price=product.price,
+        deal_price=body.amount,
+        refund_total=body.amount if body.status == "admin_marked_completed_refunded" else 0,
+        status="active",
+        refunded_at=now if body.status == "admin_marked_completed_refunded" else None,
+    )
+    db.add(order)
+    await db.flush()
+
+    db.add(
+        CustomerProduct(
+            customer_id=customer_id,
+            product_id=body.product_id,
+            order_id=order.id,
+            is_refunded=body.status == "admin_marked_completed_refunded",
+        )
+    )
+
+    enrollment = CustomerCourseEnrollment(
+        customer_id=customer_id,
+        order_id=order.id,
+        product_id=body.product_id,
+        amount_paid=body.amount,
+        status=body.status,
+        status_updated_by=current_user.id,
+        status_updated_role="admin",
+        status_updated_at=now,
+        refunded_at=now if body.status == "admin_marked_completed_refunded" else None,
+    )
+    db.add(enrollment)
+    db.add(
+        AuditLog(
+            resource_type="course_enrollment",
+            resource_id=order.id,
+            customer_id=customer_id,
+            action="admin_writeoff_course_created",
+            amount_delta=body.amount,
+            operator_user_id=current_user.id,
+            operator_role="admin",
+            note=body.note or product.name,
+        )
+    )
+    await db.commit()
+    return {"message": "ok"}
 
 
 @router.get("/pool", response_model=AdminPoolOut)

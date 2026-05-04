@@ -1,5 +1,5 @@
-from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlmodel import SQLModel
 
 from app.core.config import settings
 
@@ -10,5 +10,6 @@ async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit
 
 async def init_db():
     async with engine.begin() as conn:
-        # Startup should only validate connectivity; schema changes are managed by migrations.
-        await conn.execute(text("SELECT 1"))
+        import app.models  # noqa: F401
+
+        await conn.run_sync(SQLModel.metadata.create_all)

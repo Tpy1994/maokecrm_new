@@ -28,6 +28,18 @@ interface Customer {
   tuition_balance: number
 }
 
+interface TuitionGiftRequestItem {
+  id: string
+  customer_id: string
+  customer_name: string
+  amount: number
+  sales_note: string | null
+  admin_note: string | null
+  status: 'pending' | 'approved' | 'rejected'
+  reviewed_at: string | null
+  created_at: string
+}
+
 type CourseStatusKey =
   | 'purchased_not_started'
   | 'sales_marked_completed'
@@ -94,6 +106,11 @@ export default function CustomerList() {
   const [savingNoteCustomerId, setSavingNoteCustomerId] = useState<string | null>(null)
   const [savedNoteCustomerId, setSavedNoteCustomerId] = useState<string | null>(null)
   const [editingNextCustomerId, setEditingNextCustomerId] = useState<string | null>(null)
+  const [giftRequestOpen, setGiftRequestOpen] = useState(false)
+  const [giftRequestForm] = Form.useForm()
+  const [giftHistoryOpen, setGiftHistoryOpen] = useState(false)
+  const [giftHistoryLoading, setGiftHistoryLoading] = useState(false)
+  const [giftHistory, setGiftHistory] = useState<TuitionGiftRequestItem[]>([])
 
   const fetchLinkAccounts = useCallback(async () => {
     setLinkAccounts(await api.get<LinkAccount[]>('/sales/link-accounts'))
@@ -169,6 +186,28 @@ export default function CustomerList() {
     setSelectedProductId(null)
     setNewCourseAmount(null)
     fetchCustomers()
+  }
+
+  const submitGiftRequest = async () => {
+    const values = await giftRequestForm.validateFields()
+    await api.post('/sales/tuition-gift-requests', {
+      customer_id: values.customer_id,
+      amount: Math.round(values.amount_yuan * 100),
+      sales_note: values.sales_note || undefined,
+    })
+    message.success('赠送学费申请已提交')
+    setGiftRequestOpen(false)
+    giftRequestForm.resetFields()
+    fetchGiftHistory()
+  }
+
+  const fetchGiftHistory = async () => {
+    setGiftHistoryLoading(true)
+    try {
+      setGiftHistory(await api.get<TuitionGiftRequestItem[]>('/sales/tuition-gift-requests'))
+    } finally {
+      setGiftHistoryLoading(false)
+    }
   }
 
   const updateCourseStatus = async (customerId: string, enrollmentId: string, status: CourseStatusKey) => {
@@ -454,6 +493,8 @@ export default function CustomerList() {
         <div><h2 style={{ marginBottom: 2 }}>我的客户</h2><div style={{ color: '#8c8c8c', fontSize: 12 }}>当前筛选共 {customers.length} 个客户</div></div>
         <div style={{ display: 'flex', gap: 10 }}>
           <Input.Search placeholder='搜索客户名/标签/备注' style={{ width: 260 }} value={keyword} onChange={(e) => setKeyword(e.target.value)} onSearch={() => fetchCustomers()} />
+          <Button onClick={() => { setGiftRequestOpen(true); giftRequestForm.resetFields() }}>申请赠送学费</Button>
+          <Button onClick={() => { setGiftHistoryOpen(true); void fetchGiftHistory() }}>申请记录</Button>
           <Button>批量导入</Button>
           <Button type='primary'>+ 新建客户</Button>
         </div>
@@ -509,6 +550,71 @@ export default function CustomerList() {
           onChange={(v) => setNewCourseAmount(v === null ? null : Math.round(Number(v) * 100))}
         />
         </div>
+      </Modal>
+
+      <Modal
+        title='申请赠送学费'
+        open={giftRequestOpen}
+        onOk={submitGiftRequest}
+        onCancel={() => { setGiftRequestOpen(false); giftRequestForm.resetFields() }}
+      >
+        <Form form={giftRequestForm} layout='vertical'>
+          <Form.Item name='customer_id' label='客户' rules={[{ required: true, message: '请选择客户' }]}>
+            <Select showSearch optionFilterProp='label' placeholder='选择客户'>
+              {customers.map((c) => <Select.Option key={c.id} value={c.id} label={`${c.name} ${c.phone}`}>{c.name} {c.phone}</Select.Option>)}
+            </Select>
+          </Form.Item>
+          <Form.Item name='amount_yuan' label='赠送学费(元)' rules={[{ required: true, message: '请输入金额' }, { type: 'number', min: 0.01, message: '金额必须大于0' }]}>
+            <InputNumber min={0.01} precision={2} style={{ width: '100%' }} />
+          </Form.Item>
+          <Form.Item name='sales_note' label='销售备注'>
+            <Input.TextArea rows={3} placeholder='填写赠送原因或沟通备注' />
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      <Modal
+        title='赠送学费申请记录'
+        open={giftHistoryOpen}
+        width={860}
+        footer={null}
+        onCancel={() => setGiftHistoryOpen(false)}
+      >
+        <Table
+          rowKey='id'
+          dataSource={giftHistory}
+          loading={giftHistoryLoading}
+          pagination={false}
+          size='small'
+          columns={[
+            { title: '客户', dataIndex: 'customer_name', width: 120 },
+            { title: '金额', dataIndex: 'amount', width: 110, render: (v: number) => y2f(v) },
+            { title: '销售备注', dataIndex: 'sales_note', width: 220, render: (v: string | null) => v || '-' },
+            { title: '审核备注', dataIndex: 'admin_note', width: 220, render: (v: string | null) => v || '-' },
+            {
+              title: '状态',
+              dataIndex: 'status',
+              width: 90,
+              render: (v: TuitionGiftRequestItem['status']) => {
+                if (v === 'approved') return <Tag color='green'>已通过</Tag>
+                if (v === 'rejected') return <Tag color='red'>已驳回</Tag>
+                return <Tag color='processing'>待处理</Tag>
+              },
+            },
+            {
+              title: '提交时间',
+              dataIndex: 'created_at',
+              width: 130,
+              render: (v: string) => new Date(v).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }),
+            },
+            {
+              title: '审核时间',
+              dataIndex: 'reviewed_at',
+              width: 130,
+              render: (v: string | null) => (v ? new Date(v).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '-'),
+            },
+          ]}
+        />
       </Modal>
 
       <Modal

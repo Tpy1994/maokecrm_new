@@ -1,10 +1,13 @@
 ﻿from datetime import datetime, timedelta
+from sqlalchemy import text
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select, func, and_
+from sqlmodel import SQLModel
 from pydantic import BaseModel, Field
 
 from app.core.deps import get_db, require_role
+from app.db import engine
 from app.models.user import User
 from app.models.customer import Customer
 from app.models.link_account import LinkAccount
@@ -13,6 +16,7 @@ from app.models.order import Order, CustomerProduct
 from app.models.consultant_customer import ConsultantCustomer
 from app.models.customer_course_enrollment import CustomerCourseEnrollment
 from app.models.audit_log import AuditLog
+from app.models.tuition_gift_request import TuitionGiftRequest
 from app.models.tag import Tag, CustomerTag, TagCategory
 
 router = APIRouter(prefix="/sales", tags=["sales"])
@@ -118,6 +122,23 @@ class SalesCourseRefundRevertIn(BaseModel):
     pass
 
 
+class TuitionGiftRequestIn(BaseModel):
+    customer_id: str
+    amount: int = Field(ge=1)
+    sales_note: str | None = None
+
+
+class SalesTuitionGiftRequestOut(BaseModel):
+    id: str
+    customer_id: str
+    customer_name: str
+    amount: int
+    sales_note: str | None
+    admin_note: str | None
+    status: str
+    reviewed_at: str | None
+    created_at: str
+
 SALES_COURSE_STATUSES = {
     "purchased_not_started",
     "sales_marked_completed",
@@ -149,6 +170,14 @@ async def _get_owned_account_ids(current_user: User, db: AsyncSession) -> list[s
         select(LinkAccount.id).where(LinkAccount.owner_id == current_user.id)
     )
     return [row[0] for row in result.all()]
+
+async def _ensure_tuition_gift_request_schema() -> None:
+    async with engine.begin() as conn:
+        import app.models  # noqa: F401
+        await conn.run_sync(SQLModel.metadata.create_all)
+        await conn.execute(text("ALTER TABLE tuition_gift_requests ADD COLUMN IF NOT EXISTS admin_note TEXT"))
+        await conn.execute(text("ALTER TABLE tuition_gift_requests ADD COLUMN IF NOT EXISTS reviewed_by_user_id VARCHAR(36)"))
+        await conn.execute(text("ALTER TABLE tuition_gift_requests ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMP"))
 
 
 async def _build_customer_out(customer: Customer, db: AsyncSession) -> CustomerOut:
@@ -302,6 +331,71 @@ async def _get_enrollment_or_404(
     return enrollment
 
 
+@router.post("/tuition-gift-requests", status_code=201)
+async def create_tuition_gift_request(
+    body: TuitionGiftRequestIn,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role("sales")),
+):
+    await _ensure_tuition_gift_request_schema()
+    customer = await _get_my_customer(body.customer_id, current_user, db)
+    req = TuitionGiftRequest(
+        customer_id=customer.id,
+        sales_user_id=current_user.id,
+        amount=body.amount,
+        sales_note=body.sales_note,
+        status="pending",
+    )
+    db.add(req)
+    db.add(
+        AuditLog(
+            resource_type="tuition_gift_request",
+            resource_id=req.id,
+            customer_id=customer.id,
+            action="gift_request_created",
+            amount_delta=body.amount,
+            operator_user_id=current_user.id,
+            operator_role="sales",
+            note=body.sales_note,
+        )
+    )
+    await db.commit()
+    return {"message": "ok"}
+
+
+@router.get("/tuition-gift-requests", response_model=list[SalesTuitionGiftRequestOut])
+async def list_tuition_gift_requests(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role("sales")),
+):
+    await _ensure_tuition_gift_request_schema()
+    owned_ids = await _get_owned_account_ids(current_user, db)
+    if not owned_ids:
+        return []
+
+    rows = await db.execute(
+        select(TuitionGiftRequest, Customer)
+        .join(Customer, TuitionGiftRequest.customer_id == Customer.id)
+        .where(
+            TuitionGiftRequest.sales_user_id == current_user.id,
+            Customer.link_account_id.in_(owned_ids),
+        )
+        .order_by(TuitionGiftRequest.created_at.desc())
+    )
+    return [
+        SalesTuitionGiftRequestOut(
+            id=req.id,
+            customer_id=customer.id,
+            customer_name=customer.name,
+            amount=req.amount,
+            sales_note=req.sales_note,
+            admin_note=req.admin_note,
+            status=req.status,
+            reviewed_at=req.reviewed_at.isoformat() if req.reviewed_at else None,
+            created_at=req.created_at.isoformat(),
+        )
+        for req, customer in rows.all()
+    ]
 # ===================== Link Accounts =====================
 
 @router.get("/link-accounts", response_model=list[LinkAccountOut])
@@ -1118,4 +1212,6 @@ async def sales_dashboard(
         },
         "monthly_orders": monthly_orders,
     }
+
+
 

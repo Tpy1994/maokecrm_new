@@ -7,6 +7,7 @@ from app.models.consultant_customer import ConsultantCustomer
 from app.models.consultation_log import ConsultationLog
 from app.models.customer_course_enrollment import CustomerCourseEnrollment
 from app.models.audit_log import AuditLog
+from app.models.tuition_gift_request import TuitionGiftRequest
 from app.models.tag import TagCategory, Tag, CustomerTag
 
 __all__ = [
@@ -20,6 +21,7 @@ __all__ = [
     "ConsultationLog",
     "CustomerCourseEnrollment",
     "AuditLog",
+    "TuitionGiftRequest",
     "TagCategory",
     "Tag",
     "CustomerTag",
