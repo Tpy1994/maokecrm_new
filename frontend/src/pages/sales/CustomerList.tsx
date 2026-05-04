@@ -1,4 +1,4 @@
-﻿import { useCallback, useEffect, useMemo, useState } from 'react'
+﻿import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Button, DatePicker, Form, Input, InputNumber, Modal, Select, Table, Tag, message } from 'antd'
 import dayjs from 'dayjs'
 import { api } from '../../api/client'
@@ -103,8 +103,7 @@ export default function CustomerList() {
   const [editingRefundCourse, setEditingRefundCourse] = useState<{ customerId: string; enrollmentId: string; maxRefund: number } | null>(null)
   const [amountForm] = Form.useForm<{ amount_yuan: number }>()
   const [refundForm] = Form.useForm<{ refund_yuan: number }>()
-
-  const [selectedStatusFilter, setSelectedStatusFilter] = useState<CourseStatusKey>('purchased_not_started')
+  const activeCourseWrapRef = useRef<HTMLDivElement | null>(null)
 
   const [editingNoteCustomerId, setEditingNoteCustomerId] = useState<string | null>(null)
   const [noteDraft, setNoteDraft] = useState('')
@@ -245,6 +244,7 @@ export default function CustomerList() {
     try {
       await api.put(`/sales/customers/${customerId}/courses/${enrollmentId}/status`, { status })
       await fetchCustomers()
+      setActiveCourseKey(null)
     } finally {
       setCourseActionLoadingKey(null)
     }
@@ -257,6 +257,7 @@ export default function CustomerList() {
       await api.put(`/sales/customers/${customerId}/courses/${enrollmentId}/amount`, { amount_paid: amountPaid })
       message.success('课程实付金额已更新')
       await fetchCustomers()
+      setActiveCourseKey(null)
     } finally {
       setCourseActionLoadingKey(null)
     }
@@ -269,6 +270,7 @@ export default function CustomerList() {
       await api.post(`/sales/customers/${customerId}/courses/${enrollmentId}/refund`, { refund_amount: amount })
       message.success('退款成功')
       await fetchCustomers()
+      setActiveCourseKey(null)
     } finally {
       setCourseActionLoadingKey(null)
     }
@@ -281,10 +283,30 @@ export default function CustomerList() {
       await api.post(`/sales/customers/${customerId}/courses/${enrollmentId}/refund/revert`, {})
       message.success('已撤销退款')
       await fetchCustomers()
+      setActiveCourseKey(null)
     } finally {
       setCourseActionLoadingKey(null)
     }
   }
+
+  useEffect(() => {
+    const onDocMouseDown = (evt: MouseEvent) => {
+      if (editingRefundCourse || editingAmountCourse) return
+      if (!activeCourseKey || !activeCourseWrapRef.current) return
+      if (!activeCourseWrapRef.current.contains(evt.target as Node)) {
+        setActiveCourseKey(null)
+      }
+    }
+    const onEsc = (evt: KeyboardEvent) => {
+      if (evt.key === 'Escape') setActiveCourseKey(null)
+    }
+    document.addEventListener('mousedown', onDocMouseDown)
+    document.addEventListener('keydown', onEsc)
+    return () => {
+      document.removeEventListener('mousedown', onDocMouseDown)
+      document.removeEventListener('keydown', onEsc)
+    }
+  }, [activeCourseKey, editingRefundCourse, editingAmountCourse])
 
   const columns = [
     { title: '客户', width: 130, render: (_: unknown, r: Customer) => <div><div style={{ fontWeight: 700, fontSize: 13, lineHeight: 1.2 }}>{r.name}</div><div style={{ fontSize: 11, color: '#8c8c8c', lineHeight: 1.2, marginTop: 2 }}>{r.phone}</div></div> },
@@ -309,16 +331,23 @@ export default function CustomerList() {
           {r.courses.map((c) => {
             const meta = COURSE_STATUS_META[c.status as CourseStatusKey]
             const isRefunded = c.status.includes('refunded')
+            const isAdminStatus = c.status.startsWith('admin_')
             const courseKey = `${r.id}:${c.enrollment_id}`
             const isActive = activeCourseKey === courseKey
             const maxRefund = Math.max(c.amount_paid - c.refunded_amount, 0)
+            const nextStatus = (() => {
+              if (isAdminStatus) return null
+              if (c.status === 'purchased_not_started') return 'sales_marked_completed'
+              if (c.status === 'sales_marked_completed') return 'purchased_not_started'
+              if (c.status === 'purchased_not_started_refunded') return 'sales_marked_completed_refunded'
+              if (c.status === 'sales_marked_completed_refunded') return 'purchased_not_started_refunded'
+              return null
+            })() as CourseStatusKey | null
+            const toggleLabel = c.status.includes('sales_marked_completed') ? '回退未上' : '标记已上'
             return (
-              <div key={c.enrollment_id} style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 4 }}>
+              <div key={c.enrollment_id} ref={isActive ? activeCourseWrapRef : null} style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 4 }}>
                 <button
-                  onClick={() => {
-                    setActiveCourseKey(courseKey)
-                    void updateCourseStatus(r.id, c.enrollment_id, selectedStatusFilter)
-                  }}
+                  onClick={() => setActiveCourseKey((curr) => (curr === courseKey ? null : courseKey))}
                   style={{
                     border: `1px solid ${isActive ? '#3B82F6' : (meta?.border || '#d9d9d9')}`,
                     background: meta?.bg || '#f5f5f5',
@@ -338,29 +367,53 @@ export default function CustomerList() {
                   <span style={{ textDecoration: isRefunded ? 'line-through' : 'none', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 150 }}>{c.product_name}</span>
                 </button>
                 {isActive ? (
-                  <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
-                    <button
-                      disabled={courseActionLoadingKey !== null}
-                      onClick={() => {
-                        setEditingAmountCourse({ customerId: r.id, enrollmentId: c.enrollment_id, amountPaid: c.amount_paid })
-                        amountForm.setFieldsValue({ amount_yuan: Number((c.amount_paid / 100).toFixed(2)) })
-                      }}
-                      style={{ border: '1px solid #d9d9d9', background: '#fff', borderRadius: 4, fontSize: 10, padding: '0 6px', cursor: 'pointer' }}
-                    >改价</button>
-                    <button
-                      disabled={isRefunded || maxRefund <= 0 || courseActionLoadingKey !== null}
-                      onClick={() => {
-                        setEditingRefundCourse({ customerId: r.id, enrollmentId: c.enrollment_id, maxRefund })
-                        refundForm.setFieldsValue({ refund_yuan: Number((maxRefund / 100).toFixed(2)) })
-                      }}
-                      style={{ border: '1px solid #fecaca', background: '#fff1f2', color: '#b91c1c', borderRadius: 4, fontSize: 10, padding: '0 6px', cursor: 'pointer' }}
-                    >退款</button>
-                    <button
-                      disabled={!isRefunded || courseActionLoadingKey !== null}
-                      onClick={() => void revertRefundCourse(r.id, c.enrollment_id)}
-                      style={{ border: '1px solid #bfdbfe', background: '#eff6ff', color: '#1d4ed8', borderRadius: 4, fontSize: 10, padding: '0 6px', cursor: 'pointer' }}
-                    >撤销退款</button>
-                    <span style={{ fontSize: 10, color: '#6b7280' }}>{y2f(c.amount_paid)} / 已退 {y2f(c.refunded_amount)}</span>
+                  <div style={{ border: '1px solid #e5e7eb', background: '#fafafa', borderRadius: 6, padding: '5px 6px', width: '100%' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                      <span style={{ fontSize: 10, color: '#6b7280' }}>操作区</span>
+                      <button onClick={() => setActiveCourseKey(null)} style={{ border: 'none', background: 'transparent', color: '#9ca3af', cursor: 'pointer', fontSize: 12, lineHeight: 1 }}>×</button>
+                    </div>
+                    <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                      {isAdminStatus ? (
+                        <span style={{ fontSize: 10, color: '#6b7280' }}>管理员处理状态，销售不可修改</span>
+                      ) : (
+                        <>
+                          {nextStatus ? (
+                            <button
+                              disabled={courseActionLoadingKey !== null}
+                              onClick={() => void updateCourseStatus(r.id, c.enrollment_id, nextStatus)}
+                              style={{ border: '1px solid #bfdbfe', background: '#eff6ff', color: '#1d4ed8', borderRadius: 4, fontSize: 10, padding: '0 6px', cursor: 'pointer' }}
+                            >{toggleLabel}</button>
+                          ) : null}
+                          {!isRefunded ? (
+                            <>
+                              <button
+                                disabled={courseActionLoadingKey !== null}
+                                onClick={() => {
+                                  setEditingAmountCourse({ customerId: r.id, enrollmentId: c.enrollment_id, amountPaid: c.amount_paid })
+                                  amountForm.setFieldsValue({ amount_yuan: Number((c.amount_paid / 100).toFixed(2)) })
+                                }}
+                                style={{ border: '1px solid #d9d9d9', background: '#fff', borderRadius: 4, fontSize: 10, padding: '0 6px', cursor: 'pointer' }}
+                              >改价</button>
+                              <button
+                                disabled={maxRefund <= 0 || courseActionLoadingKey !== null}
+                                onClick={() => {
+                                  setEditingRefundCourse({ customerId: r.id, enrollmentId: c.enrollment_id, maxRefund })
+                                  refundForm.setFieldsValue({ refund_yuan: Number((maxRefund / 100).toFixed(2)) })
+                                }}
+                                style={{ border: '1px solid #fecaca', background: '#fff1f2', color: '#b91c1c', borderRadius: 4, fontSize: 10, padding: '0 6px', cursor: 'pointer' }}
+                              >退款</button>
+                            </>
+                          ) : (
+                            <button
+                              disabled={courseActionLoadingKey !== null}
+                              onClick={() => void revertRefundCourse(r.id, c.enrollment_id)}
+                              style={{ border: '1px solid #bfdbfe', background: '#eff6ff', color: '#1d4ed8', borderRadius: 4, fontSize: 10, padding: '0 6px', cursor: 'pointer' }}
+                            >撤销退款</button>
+                          )}
+                        </>
+                      )}
+                      <span style={{ fontSize: 10, color: '#6b7280' }}>{y2f(c.amount_paid)} / 已退 {y2f(c.refunded_amount)}</span>
+                    </div>
                   </div>
                 ) : null}
               </div>
@@ -477,7 +530,7 @@ export default function CustomerList() {
       </div>
 
       <div style={{ background: '#fff', border: '1px solid #e8e8e3', borderRadius: 10, padding: 14, marginBottom: 14 }}>
-        <div style={{ color: '#595959', fontSize: 13, marginBottom: 8 }}>已购课程标签的 6 种状态</div>
+        <div style={{ color: '#595959', fontSize: 13, marginBottom: 8 }}>已购课程标签的 6 种状态（仅展示）（仅展示）</div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(220px, 1fr))', gap: 10 }}>
           {([
             'purchased_not_started',
@@ -488,21 +541,18 @@ export default function CustomerList() {
             'admin_marked_completed_refunded',
           ] as CourseStatusKey[]).map((key) => {
             const meta = COURSE_STATUS_META[key]
-            const active = selectedStatusFilter === key
             const isRefunded = key.includes('refunded')
             return (
-              <button
+              <div
                 key={key}
-                onClick={() => setSelectedStatusFilter(key)}
                 style={{
                   textAlign: 'left',
                   borderRadius: 6,
-                  border: `1px solid ${active ? '#3B82F6' : meta.border}`,
+                  border: `1px solid ${meta.border}`,
                   background: '#fff',
                   color: '#595959',
                   padding: '8px 10px',
-                  cursor: salesStatusSet.has(key) ? 'pointer' : 'not-allowed',
-                  opacity: salesStatusSet.has(key) ? 1 : 0.7,
+                  cursor: 'default',
                   display: 'flex',
                   alignItems: 'center',
                   gap: 8,
@@ -512,7 +562,7 @@ export default function CustomerList() {
                   电商管理课
                 </span>
                 <span style={{ fontSize: 12, color: '#595959', textDecoration: isRefunded ? 'line-through' : 'none' }}>{meta.label}</span>
-              </button>
+              </div>
             )
           })}
         </div>
@@ -753,3 +803,11 @@ export default function CustomerList() {
     </div>
   )
 }
+
+
+
+
+
+
+
+
