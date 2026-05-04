@@ -57,8 +57,8 @@ export default function SalesCustomerLogsPage() {
       if (dateRange[0]) q.push(`date_from=${dateRange[0].format('YYYY-MM-DD')}`)
       if (dateRange[1]) q.push(`date_to=${dateRange[1].format('YYYY-MM-DD')}`)
       const [logRes, detailRes] = await Promise.all([
-        api.get<LogItem[]>(`/sales/customers/${customerId}/consultation-logs?${q.join('&')}`),
-        api.get<DetailItem>(`/sales/customers/${customerId}/consultation-detail`),
+        api.get<LogItem[]>(`/consultant/customers/${customerId}/consultation-logs?${q.join('&')}`),
+        api.get<DetailItem>(`/consultant/customers/${customerId}/detail`),
       ])
       setLogs(logRes)
       setDetail(detailRes)
@@ -155,7 +155,7 @@ export default function SalesCustomerLogsPage() {
               <Button
                 size="small"
                 onClick={async () => {
-                  const detailRes = await api.get<LogDetailItem>(`/sales/customers/${customerId}/consultation-logs/${l.id}`)
+                  const detailRes = await api.get<LogDetailItem>(`/consultant/logs/${l.id}`)
                   setSelectedLog(detailRes)
                   setDetailOpen(true)
                 }}

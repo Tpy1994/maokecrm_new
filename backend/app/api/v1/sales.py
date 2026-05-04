@@ -15,6 +15,7 @@ from app.models.link_account import LinkAccount
 from app.models.product import Product
 from app.models.order import Order, CustomerProduct
 from app.models.consultant_customer import ConsultantCustomer
+from app.models.consultation_log import ConsultationLog
 from app.models.customer_course_enrollment import CustomerCourseEnrollment
 from app.models.audit_log import AuditLog
 from app.models.tuition_gift_request import TuitionGiftRequest
@@ -276,14 +277,10 @@ async def _build_customer_out(customer: Customer, db: AsyncSession) -> CustomerO
     )
     in_pool = pending_r.scalar_one_or_none() is not None
 
-    cc_count_r = await db.execute(
-        select(ConsultantCustomer).where(
-            ConsultantCustomer.customer_id == customer.id,
-            ConsultantCustomer.status.in_(["active", "ended"]),
-        ).order_by(ConsultantCustomer.updated_at.desc())
+    consultation_count_r = await db.execute(
+        select(func.count(ConsultationLog.id)).where(ConsultationLog.customer_id == customer.id)
     )
-    cc_latest = cc_count_r.scalars().first()
-    consultation_count = cc_latest.consultation_count if cc_latest else None
+    consultation_count = int(consultation_count_r.scalar() or 0)
 
     return CustomerOut(
         id=customer.id, name=customer.name, phone=customer.phone,
