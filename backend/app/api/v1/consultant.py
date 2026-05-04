@@ -329,6 +329,10 @@ async def consultant_customers(
 
         products, refunded = await _build_products(c.id, db)
         collaborators = await _build_consultants(c.id, current_user.id, db)
+        consultation_count_r = await db.execute(
+            select(func.count(ConsultationLog.id)).where(ConsultationLog.customer_id == c.id)
+        )
+        consultation_count = int(consultation_count_r.scalar() or 0)
 
         status_key, status_label, row_tone = _dt_status(rel.next_consultation)
         period_state, period_key = _period_status(rel.start_date, rel.end_date)
@@ -353,7 +357,7 @@ async def consultant_customers(
                 next_consultation_label=status_label,
                 period_label=period_label,
                 period_status=period_key,
-                consultation_count=rel.consultation_count,
+                consultation_count=consultation_count,
                 is_refunded_customer=refunded,
                 row_tone=row_tone if not refunded else "muted",
                 collaborators=collaborators,
