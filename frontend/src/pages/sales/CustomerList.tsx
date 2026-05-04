@@ -14,6 +14,8 @@ interface Customer {
   phone: string
   industry: string | null
   region: string | null
+  added_date: string
+  other_contact: string | null
   link_account_id: string
   link_account_name: string | null
   tags: CustomerTag[]
@@ -83,6 +85,9 @@ export default function CustomerList() {
 
   const [addWechatOpen, setAddWechatOpen] = useState(false)
   const [addWechatForm] = Form.useForm()
+  const [createCustomerOpen, setCreateCustomerOpen] = useState(false)
+  const [createCustomerSubmitting, setCreateCustomerSubmitting] = useState(false)
+  const [createCustomerForm] = Form.useForm()
 
   const [tagTarget, setTagTarget] = useState<Customer | null>(null)
   const [tagOptions, setTagOptions] = useState<TagOption[]>([])
@@ -144,6 +149,29 @@ export default function CustomerList() {
     setAddWechatOpen(false)
     addWechatForm.resetFields()
     fetchLinkAccounts()
+  }
+
+  const submitCreateCustomer = async () => {
+    const v = await createCustomerForm.validateFields()
+    setCreateCustomerSubmitting(true)
+    try {
+      await api.post('/sales/customers', {
+        name: v.name,
+        phone: v.phone,
+        industry: v.industry || undefined,
+        region: v.region || undefined,
+        link_account_id: v.link_account_id,
+        added_date: (v.added_date || dayjs()).format('YYYY-MM-DD'),
+        other_contact: v.other_contact || undefined,
+      })
+      message.success('客户已创建')
+      setCreateCustomerOpen(false)
+      createCustomerForm.resetFields()
+      await fetchCustomers()
+      await fetchLinkAccounts()
+    } finally {
+      setCreateCustomerSubmitting(false)
+    }
   }
 
   const saveNote = async (customerId: string, value: string) => {
@@ -422,6 +450,7 @@ export default function CustomerList() {
       }
     },
     { title: '咨询次数', width: 80, render: (_: unknown, r: Customer) => <Select size='small' value={r.consultation_count ?? undefined} style={{ width: 60 }} placeholder='—' disabled={r.consultation_count === null} options={Array.from({ length: 21 }, (_, i) => ({ value: i, label: `${i}` }))} onChange={async (val) => { await api.put(`/sales/customers/${r.id}`, { consultation_count: val }); fetchCustomers() }} /> },
+    { title: '加粉日期', width: 96, dataIndex: 'added_date', render: (v: string) => <span style={{ fontSize: 12 }}>{dayjs(v).format('YYYY-MM-DD')}</span> },
     { title: '绑定微信', width: 90, dataIndex: 'link_account_name', render: (v: string | null) => <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }}>{v || '-'}</span> },
   ]
 
@@ -496,7 +525,16 @@ export default function CustomerList() {
           <Button onClick={() => { setGiftRequestOpen(true); giftRequestForm.resetFields() }}>申请赠送学费</Button>
           <Button onClick={() => { setGiftHistoryOpen(true); void fetchGiftHistory() }}>申请记录</Button>
           <Button>批量导入</Button>
-          <Button type='primary'>+ 新建客户</Button>
+          <Button
+            type='primary'
+            onClick={() => {
+              createCustomerForm.resetFields()
+              createCustomerForm.setFieldsValue({ added_date: dayjs(), link_account_id: selectedLA ?? undefined })
+              setCreateCustomerOpen(true)
+            }}
+          >
+            + 新建客户
+          </Button>
         </div>
       </div>
 
@@ -516,6 +554,54 @@ export default function CustomerList() {
             <Input placeholder='例如 maoke_1234' />
           </Form.Item>
         </Form>
+      </Modal>
+
+      <Modal
+        title='新建客户'
+        open={createCustomerOpen}
+        width={620}
+        confirmLoading={createCustomerSubmitting}
+        onOk={submitCreateCustomer}
+        onCancel={() => setCreateCustomerOpen(false)}
+      >
+        <div style={{ background: 'linear-gradient(180deg, #f8fbff 0%, #ffffff 40%)', border: '1px solid #e6efff', borderRadius: 12, padding: 14 }}>
+          <div style={{ fontSize: 12, color: '#3b82f6', marginBottom: 10 }}>客户基础信息</div>
+          <Form form={createCustomerForm} layout='vertical'>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+              <Form.Item name='name' label='客户姓名' rules={[{ required: true, message: '请输入客户姓名' }]}>
+                <Input maxLength={50} placeholder='例如：张三' />
+              </Form.Item>
+              <Form.Item name='phone' label='手机号' rules={[{ required: true, message: '请输入手机号' }]}>
+                <Input maxLength={20} placeholder='例如：13800000000' />
+              </Form.Item>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+              <Form.Item name='industry' label='行业'>
+                <Input maxLength={50} placeholder='选填' />
+              </Form.Item>
+              <Form.Item name='region' label='地区'>
+                <Input maxLength={50} placeholder='选填' />
+              </Form.Item>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+              <Form.Item name='link_account_id' label='绑定微信' rules={[{ required: true, message: '请选择微信号' }]}>
+                <Select placeholder='选择微信号'>
+                  {linkAccounts.map((la) => (
+                    <Select.Option key={la.id} value={la.id}>
+                      {la.account_id}
+                    </Select.Option>
+                  ))}
+                </Select>
+              </Form.Item>
+              <Form.Item name='added_date' label='加粉日期' rules={[{ required: true, message: '请选择加粉日期' }]}>
+                <DatePicker style={{ width: '100%' }} format='YYYY-MM-DD' />
+              </Form.Item>
+            </div>
+            <Form.Item name='other_contact' label='其他联系方式（选填）' extra='支持填写客户微信号、QQ、邮箱等'>
+              <Input maxLength={200} placeholder='例如：微信 zhangsan_01 / QQ 123456' />
+            </Form.Item>
+          </Form>
+        </div>
       </Modal>
 
       <Modal title='添加标签' open={!!tagTarget} onOk={addTag} onCancel={() => { setTagTarget(null); setSelectedTag(null) }}>

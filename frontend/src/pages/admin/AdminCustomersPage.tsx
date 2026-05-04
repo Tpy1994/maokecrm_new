@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+﻿import { useEffect, useState } from 'react'
 import { Input, Select, Table, Tag, message } from 'antd'
 import { api } from '../../api/client'
 
@@ -10,6 +10,8 @@ interface RowItem {
   customer_name: string
   phone: string
   customer_info: string
+  added_date: string
+  other_contact: string | null
   wechat_name: string | null
   sales_name: string | null
   tags: CTag[]
@@ -54,6 +56,18 @@ export default function AdminCustomersPage() {
           <div style={{ color: '#8c8c8c', fontSize: 12 }}>{r.phone || '-'} {r.customer_info ? `· ${r.customer_info}` : ''}</div>
         </div>
       ),
+    },
+    {
+      title: '加粉日期',
+      dataIndex: 'added_date',
+      width: 120,
+      render: (v: string) => v || '-',
+    },
+    {
+      title: '其他联系方式',
+      dataIndex: 'other_contact',
+      width: 180,
+      render: (v: string | null) => v || '—',
     },
     { title: '微信号', dataIndex: 'wechat_name', width: 120, render: (v: string | null) => v || '—' },
     { title: '来源销售', dataIndex: 'sales_name', width: 120, render: (v: string | null) => v || '—' },

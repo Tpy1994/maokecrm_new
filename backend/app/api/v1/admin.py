@@ -64,6 +64,8 @@ class AdminCustomerItemOut(BaseModel):
     customer_name: str
     phone: str
     customer_info: str
+    added_date: str
+    other_contact: str | None
     wechat_name: str | None
     sales_name: str | None
     tags: list[TagOut]
@@ -802,6 +804,8 @@ async def admin_customers(
                 customer_name=c.name,
                 phone=c.phone,
                 customer_info=f"{c.industry or ''}{'-' if c.industry and c.region else ''}{c.region or ''}",
+                added_date=c.added_date.isoformat(),
+                other_contact=c.other_contact,
                 wechat_name=wechat_name,
                 sales_name=sales_name,
                 tags=tags,

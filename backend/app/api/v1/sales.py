@@ -1,4 +1,4 @@
-﻿from datetime import datetime, timedelta
+﻿from datetime import date, datetime, timedelta
 from sqlalchemy import text
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -57,6 +57,8 @@ class CustomerOut(BaseModel):
     phone: str
     industry: str | None
     region: str | None
+    added_date: str
+    other_contact: str | None
     link_account_id: str
     link_account_name: str | None
     tags: list[CustomerTagOut]
@@ -77,6 +79,8 @@ class CustomerCreate(BaseModel):
     phone: str = Field(max_length=20)
     industry: str | None = None
     region: str | None = None
+    added_date: str | None = None
+    other_contact: str | None = Field(default=None, max_length=200)
     link_account_id: str
 
 class CustomerUpdate(BaseModel):
@@ -84,6 +88,8 @@ class CustomerUpdate(BaseModel):
     phone: str | None = None
     industry: str | None = None
     region: str | None = None
+    added_date: str | None = None
+    other_contact: str | None = Field(default=None, max_length=200)
     note: str | None = None
     next_follow_up: str | None = None
     consultation_count: int | None = None
@@ -180,6 +186,16 @@ async def _ensure_tuition_gift_request_schema() -> None:
         await conn.execute(text("ALTER TABLE tuition_gift_requests ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMP"))
 
 
+async def _ensure_customer_added_date_schema() -> None:
+    async with engine.begin() as conn:
+        import app.models  # noqa: F401
+        await conn.run_sync(SQLModel.metadata.create_all)
+        await conn.execute(text("ALTER TABLE customers ADD COLUMN IF NOT EXISTS added_date DATE"))
+        await conn.execute(text("ALTER TABLE customers ADD COLUMN IF NOT EXISTS other_contact VARCHAR(200)"))
+        await conn.execute(text("UPDATE customers SET added_date = CURRENT_DATE WHERE added_date IS NULL"))
+        await conn.execute(text("ALTER TABLE customers ALTER COLUMN added_date SET DEFAULT CURRENT_DATE"))
+
+
 async def _build_customer_out(customer: Customer, db: AsyncSession) -> CustomerOut:
     # link_account name
     la_result = await db.execute(select(LinkAccount.account_id).where(LinkAccount.id == customer.link_account_id))
@@ -270,7 +286,8 @@ async def _build_customer_out(customer: Customer, db: AsyncSession) -> CustomerO
 
     return CustomerOut(
         id=customer.id, name=customer.name, phone=customer.phone,
-        industry=customer.industry, region=customer.region,
+        industry=customer.industry, region=customer.region, added_date=customer.added_date.isoformat(),
+        other_contact=customer.other_contact,
         link_account_id=customer.link_account_id, link_account_name=la_name,
         tags=tags, products=products,
         note=note, next_follow_up=next_fu, follow_up_overdue=overdue,
@@ -462,6 +479,7 @@ async def list_customers(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_role("sales")),
 ):
+    await _ensure_customer_added_date_schema()
     owned = await _get_owned_account_ids(current_user, db)
     if not owned:
         return []
@@ -501,6 +519,7 @@ async def create_customer(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_role("sales")),
 ):
+    await _ensure_customer_added_date_schema()
     la_result = await db.execute(
         select(LinkAccount).where(
             LinkAccount.id == body.link_account_id,
@@ -510,9 +529,18 @@ async def create_customer(
     if not la_result.scalar_one_or_none():
         raise HTTPException(400, "该账号不属于你")
 
+    added_date = date.today()
+    if body.added_date:
+        try:
+            added_date = date.fromisoformat(body.added_date)
+        except ValueError as e:
+            raise HTTPException(400, "added_date must be YYYY-MM-DD") from e
+
     customer = Customer(
         name=body.name, phone=body.phone,
         industry=body.industry, region=body.region,
+        added_date=added_date,
+        other_contact=body.other_contact.strip() if body.other_contact else None,
         link_account_id=body.link_account_id, entry_user_id=current_user.id,
     )
     db.add(customer)
@@ -531,12 +559,20 @@ async def update_customer(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_role("sales")),
 ):
+    await _ensure_customer_added_date_schema()
     customer = await _get_my_customer(customer_id, current_user, db)
 
     if body.name is not None: customer.name = body.name
     if body.phone is not None: customer.phone = body.phone
     if body.industry is not None: customer.industry = body.industry
     if body.region is not None: customer.region = body.region
+    if body.other_contact is not None:
+        customer.other_contact = body.other_contact.strip() or None
+    if body.added_date is not None:
+        try:
+            customer.added_date = date.fromisoformat(body.added_date)
+        except ValueError as e:
+            raise HTTPException(400, "added_date must be YYYY-MM-DD") from e
 
     if body.note is not None:
         customer.sales_note = body.note
@@ -1212,6 +1248,10 @@ async def sales_dashboard(
         },
         "monthly_orders": monthly_orders,
     }
+
+
+
+
 
 
 

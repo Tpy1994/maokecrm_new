@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 
 from sqlmodel import Field, SQLModel
 
@@ -18,6 +18,8 @@ class Customer(SQLModel, table=True):
     last_active_at: datetime | None = Field(default=None)
     sales_note: str | None = Field(default=None)
     next_follow_up: datetime | None = Field(default=None)
+    added_date: date = Field(default_factory=date.today)
+    other_contact: str | None = Field(default=None, max_length=200)
     gifted_tuition_amount: int = Field(default=0)
 
     created_at: datetime = Field(default_factory=utcnow)
