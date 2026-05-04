@@ -13,7 +13,10 @@ router = APIRouter(prefix="/products", tags=["products"])
 
 
 @router.get("/", response_model=list[ProductOut])
-async def list_products(db: AsyncSession = Depends(get_db), _=Depends(require_role("admin"))):
+async def list_products(
+    db: AsyncSession = Depends(get_db),
+    _=Depends(require_role("admin", "sales", "consultant")),
+):
     result = await db.execute(select(Product).order_by(Product.status.desc(), Product.name))
     products = result.scalars().all()
 
@@ -49,6 +52,14 @@ async def list_products(db: AsyncSession = Depends(get_db), _=Depends(require_ro
             )
         )
     return out
+
+
+@router.get("", response_model=list[ProductOut], include_in_schema=False)
+async def list_products_no_slash(
+    db: AsyncSession = Depends(get_db),
+    _=Depends(require_role("admin", "sales", "consultant")),
+):
+    return await list_products(db, _)
 
 
 @router.get("/{product_id}", response_model=ProductOut)

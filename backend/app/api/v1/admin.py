@@ -122,6 +122,10 @@ class AdminTuitionWriteoffCustomerOut(BaseModel):
     customer_name: str
     phone: str
     sales_name: str | None
+    tags: list[TagOut]
+    consult_count: int
+    wechat_name: str | None
+    sales_note: str | None
     total_spent: int
     gifted_tuition_amount: int
     tuition_balance: int
@@ -323,15 +327,29 @@ async def list_tuition_writeoff_customers(
     customers_r = await db.execute(select(Customer).order_by(Customer.updated_at.desc(), Customer.created_at.desc()))
     customers = customers_r.scalars().all()
     out: list[AdminTuitionWriteoffCustomerOut] = []
+    k = (keyword or "").strip().lower()
 
     for c in customers:
-        if keyword:
-            k = keyword.strip().lower()
-            if k and k not in c.name.lower() and k not in c.phone.lower():
-                continue
-
         sales_r = await db.execute(select(User.name).where(User.id == c.entry_user_id))
         sales_name = sales_r.scalar_one_or_none()
+        tags = await _build_tags(c.id, db)
+        consultant_r = await db.execute(
+            select(func.coalesce(func.max(ConsultantCustomer.consultation_count), 0)).where(
+                ConsultantCustomer.customer_id == c.id
+            )
+        )
+        consult_count = int(consultant_r.scalar() or 0)
+        link_r = await db.execute(select(LinkAccount.account_id).where(LinkAccount.id == c.link_account_id))
+        wechat_name = link_r.scalar_one_or_none()
+        searchable = [
+            c.name.lower(),
+            c.phone.lower(),
+            (c.sales_note or "").lower(),
+            (wechat_name or "").lower(),
+            *[t.name.lower() for t in tags],
+        ]
+        if k and not any(k in text for text in searchable):
+            continue
 
         spent_r = await db.execute(
             select(func.coalesce(func.sum(Order.amount - Order.refund_total), 0)).where(Order.customer_id == c.id)
@@ -375,6 +393,10 @@ async def list_tuition_writeoff_customers(
                 customer_name=c.name,
                 phone=c.phone,
                 sales_name=sales_name,
+                tags=tags,
+                consult_count=consult_count,
+                wechat_name=wechat_name,
+                sales_note=c.sales_note,
                 total_spent=total_spent,
                 gifted_tuition_amount=gifted,
                 tuition_balance=tuition_balance,
@@ -419,7 +441,7 @@ async def create_admin_writeoff_course(
         list_price=product.price,
         deal_price=body.amount,
         refund_total=body.amount if body.status == "admin_marked_completed_refunded" else 0,
-        status="active",
+        status="refunded" if body.status == "admin_marked_completed_refunded" else "active",
         refunded_at=now if body.status == "admin_marked_completed_refunded" else None,
     )
     db.add(order)
@@ -458,6 +480,80 @@ async def create_admin_writeoff_course(
             note=body.note or product.name,
         )
     )
+    await db.commit()
+    return {"message": "ok"}
+
+
+@router.put("/customers/{customer_id}/courses/{enrollment_id}/status")
+async def update_admin_course_status(
+    customer_id: str,
+    enrollment_id: str,
+    body: AdminCourseStatusUpdateIn,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role("admin")),
+):
+    if body.status not in ADMIN_COURSE_STATUSES:
+        raise HTTPException(400, "管理员仅可设置后2种状态")
+
+    row = await db.execute(
+        select(CustomerCourseEnrollment).where(
+            CustomerCourseEnrollment.id == enrollment_id,
+            CustomerCourseEnrollment.customer_id == customer_id,
+        )
+    )
+    enrollment = row.scalar_one_or_none()
+    if enrollment is None:
+        raise HTTPException(404, "课程记录不存在")
+
+    order_r = await db.execute(select(Order).where(Order.id == enrollment.order_id))
+    order = order_r.scalar_one_or_none()
+    if order is None:
+        raise HTTPException(404, "订单不存在")
+
+    if body.status == enrollment.status:
+        return {"message": "ok"}
+    if enrollment.status == "admin_marked_completed_refunded" and body.status != "admin_marked_completed_refunded":
+        raise HTTPException(400, "已退款课程不支持回退状态")
+
+    now = datetime.utcnow()
+    if body.status == "admin_marked_completed_refunded":
+        refund_amount = int(order.amount or enrollment.amount_paid or 0)
+        enrollment.status = body.status
+        enrollment.status_updated_by = current_user.id
+        enrollment.status_updated_role = "admin"
+        enrollment.status_updated_at = now
+        enrollment.refunded_at = now
+        enrollment.updated_at = now
+
+        order.status = "refunded"
+        order.refunded_at = now
+        order.refund_total = refund_amount
+        order.updated_at = now
+
+        cp_r = await db.execute(
+            select(CustomerProduct).where(
+                CustomerProduct.order_id == order.id,
+                CustomerProduct.customer_id == customer_id,
+                CustomerProduct.product_id == enrollment.product_id,
+            )
+        )
+        customer_product = cp_r.scalar_one_or_none()
+        if customer_product is not None:
+            customer_product.is_refunded = True
+
+        db.add(
+            AuditLog(
+                resource_type="course_enrollment",
+                resource_id=order.id,
+                customer_id=customer_id,
+                action="admin_writeoff_course_refunded",
+                amount_delta=-refund_amount,
+                operator_user_id=current_user.id,
+                operator_role="admin",
+                note="管理员销课退款",
+            )
+        )
+
     await db.commit()
     return {"message": "ok"}
 
@@ -715,31 +811,3 @@ async def admin_dashboard(
     )
 
 
-@router.put("/customers/{customer_id}/courses/{enrollment_id}/status")
-async def update_admin_course_status(
-    customer_id: str,
-    enrollment_id: str,
-    body: AdminCourseStatusUpdateIn,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_role("admin")),
-):
-    if body.status not in ADMIN_COURSE_STATUSES:
-        raise HTTPException(400, "管理员仅可设置后2种状态")
-
-    row = await db.execute(
-        select(CustomerCourseEnrollment).where(
-            CustomerCourseEnrollment.id == enrollment_id,
-            CustomerCourseEnrollment.customer_id == customer_id,
-        )
-    )
-    enrollment = row.scalar_one_or_none()
-    if enrollment is None:
-        raise HTTPException(404, "课程记录不存在")
-
-    enrollment.status = body.status
-    enrollment.status_updated_by = current_user.id
-    enrollment.status_updated_role = "admin"
-    enrollment.status_updated_at = datetime.utcnow()
-    enrollment.updated_at = datetime.utcnow()
-    await db.commit()
-    return {"message": "ok"}

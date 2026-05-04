@@ -1,9 +1,10 @@
 ﻿import { useEffect, useMemo, useState } from 'react'
-import { Button, Input, InputNumber, Modal, Select, Table, Tag, message } from 'antd'
+import { Button, Input, InputNumber, Modal, Select, Table, Tag, Tooltip, message } from 'antd'
 import { api } from '../../api/client'
 
 interface CourseItem {
   enrollment_id: string
+  product_id?: string
   product_name: string
   amount_paid: number
   status: string
@@ -15,6 +16,10 @@ interface CustomerItem {
   customer_name: string
   phone: string
   sales_name: string | null
+  tags: { id: string; name: string; color: string }[]
+  consult_count: number
+  wechat_name: string | null
+  sales_note: string | null
   total_spent: number
   gifted_tuition_amount: number
   tuition_balance: number
@@ -52,6 +57,23 @@ interface SummaryItem {
   total_pending: number
 }
 
+type CourseStatusKey =
+  | 'purchased_not_started'
+  | 'sales_marked_completed'
+  | 'purchased_not_started_refunded'
+  | 'sales_marked_completed_refunded'
+  | 'admin_marked_completed'
+  | 'admin_marked_completed_refunded'
+
+const COURSE_STATUS_META: Record<CourseStatusKey, { label: string; bg: string; color: string; border: string }> = {
+  purchased_not_started: { label: '已购未上', bg: '#FDECEC', color: '#B42318', border: '#F7CACA' },
+  sales_marked_completed: { label: '销售标记已上', bg: '#EAF8EE', color: '#166534', border: '#BFE7CB' },
+  purchased_not_started_refunded: { label: '已购未上+退款', bg: '#FDECEC', color: '#B42318', border: '#F7CACA' },
+  sales_marked_completed_refunded: { label: '销售标记已上+退款', bg: '#EAF8EE', color: '#166534', border: '#BFE7CB' },
+  admin_marked_completed: { label: '管理员销课已上', bg: '#EAF2FF', color: '#1D4ED8', border: '#BFDBFE' },
+  admin_marked_completed_refunded: { label: '管理员销课+退款', bg: '#EAF2FF', color: '#1D4ED8', border: '#BFDBFE' },
+}
+
 const y2f = (cents: number) => `￥${(cents / 100).toLocaleString()}`
 
 export default function AdminTuitionAndWriteoffPage() {
@@ -59,12 +81,14 @@ export default function AdminTuitionAndWriteoffPage() {
   const [selectedCustomerId, setSelectedCustomerId] = useState<string | null>(null)
   const [products, setProducts] = useState<ProductOption[]>([])
   const [writeoffOpen, setWriteoffOpen] = useState(false)
-  const [writeoffForm, setWriteoffForm] = useState({ product_id: '', amount_yuan: 0, status: 'admin_marked_completed', note: '' })
+  const [writeoffForm, setWriteoffForm] = useState({ product_id: '', amount_yuan: 0, note: '' })
+  const [refundingId, setRefundingId] = useState<string | null>(null)
 
   const [rows, setRows] = useState<TuitionGiftRequestItem[]>([])
   const [summary, setSummary] = useState<SummaryItem | null>(null)
   const [loading, setLoading] = useState(false)
-  const [keyword, setKeyword] = useState('')
+  const [reviewKeyword, setReviewKeyword] = useState('')
+  const [writeoffKeyword, setWriteoffKeyword] = useState('')
   const [activeStatus, setActiveStatus] = useState<'pending' | 'approved' | 'rejected'>('pending')
   const [reviewing, setReviewing] = useState<{ id: string; action: 'approve' | 'reject' } | null>(null)
   const [adminNote, setAdminNote] = useState('')
@@ -87,7 +111,9 @@ export default function AdminTuitionAndWriteoffPage() {
   }
 
   const fetchCustomers = async () => {
-    const data = await api.get<CustomerItem[]>('/admin/tuition-writeoff/customers')
+    const q = writeoffKeyword.trim()
+    const query = q ? `?keyword=${encodeURIComponent(q)}` : ''
+    const data = await api.get<CustomerItem[]>(`/admin/tuition-writeoff/customers${query}`)
     setCustomers(data)
     if (!selectedCustomerId && data.length) setSelectedCustomerId(data[0].customer_id)
   }
@@ -102,6 +128,7 @@ export default function AdminTuitionAndWriteoffPage() {
     message.success('已通过')
     fetchRows()
     fetchCustomers()
+    fetchSummary()
   }
 
   const reject = async (id: string, note: string) => {
@@ -109,16 +136,30 @@ export default function AdminTuitionAndWriteoffPage() {
     message.success('已驳回')
     fetchRows()
     fetchCustomers()
+    fetchSummary()
+  }
+
+  const refundCourse = async (customerId: string, enrollmentId: string) => {
+    setRefundingId(enrollmentId)
+    try {
+      await api.put(`/admin/customers/${customerId}/courses/${enrollmentId}/status`, { status: 'admin_marked_completed_refunded' })
+      message.success('已退款')
+      await fetchCustomers()
+      await fetchSummary()
+    } finally {
+      setRefundingId(null)
+    }
   }
 
   useEffect(() => { void fetchRows() }, [activeStatus])
-  useEffect(() => { void fetchCustomers(); void fetchProducts(); void fetchSummary() }, [])
+  useEffect(() => { void fetchProducts(); void fetchSummary() }, [])
+  useEffect(() => { void fetchCustomers() }, [writeoffKeyword])
 
   const filtered = useMemo(() => {
-    const k = keyword.trim().toLowerCase()
+    const k = reviewKeyword.trim().toLowerCase()
     if (!k) return rows
     return rows.filter((r) => r.customer_name.toLowerCase().includes(k) || (r.sales_note || '').toLowerCase().includes(k))
-  }, [rows, keyword])
+  }, [rows, reviewKeyword])
 
   const pendingCount = activeStatus === 'pending' ? rows.length : 0
   const selectedCustomer = customers.find((c) => c.customer_id === selectedCustomerId) || null
@@ -167,7 +208,7 @@ export default function AdminTuitionAndWriteoffPage() {
             <Button size='small' type={activeStatus === 'pending' ? 'primary' : 'default'} onClick={() => setActiveStatus('pending')}>待处理</Button>
             <Button size='small' type={activeStatus === 'approved' ? 'primary' : 'default'} onClick={() => setActiveStatus('approved')}>已通过</Button>
             <Button size='small' type={activeStatus === 'rejected' ? 'primary' : 'default'} onClick={() => setActiveStatus('rejected')}>已驳回</Button>
-            <Input.Search value={keyword} onChange={(e) => setKeyword(e.target.value)} placeholder='搜索客户' style={{ width: 240 }} />
+            <Input.Search value={reviewKeyword} onChange={(e) => setReviewKeyword(e.target.value)} placeholder='搜索客户' style={{ width: 240 }} />
           </div>
         </div>
         <Table
@@ -205,64 +246,124 @@ export default function AdminTuitionAndWriteoffPage() {
         />
       </div>
 
-      <div style={{ marginTop: 16, display: 'grid', gridTemplateColumns: '380px 1fr', gap: 12 }}>
-        <div style={{ border: '1px solid #e8e8e3', borderRadius: 10, background: '#fff', overflow: 'hidden' }}>
-          <div style={{ padding: 12, borderBottom: '1px solid #efefea', fontWeight: 700 }}>全量客户（待处理赠送置顶）</div>
-          <div style={{ maxHeight: 540, overflow: 'auto' }}>
-            {customers.map((c) => {
-              const active = c.customer_id === selectedCustomerId
-              return (
-                <button
-                  key={c.customer_id}
-                  onClick={() => setSelectedCustomerId(c.customer_id)}
-                  style={{ width: '100%', textAlign: 'left', border: 'none', borderBottom: '1px solid #f3f3ef', background: active ? '#f7fbff' : '#fff', padding: '10px 12px', cursor: 'pointer' }}
-                >
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <div style={{ fontWeight: 700, fontSize: 13 }}>{c.customer_name}</div>
-                    {c.pending_gift_request_count > 0 ? <Tag color='red'>待处理 {c.pending_gift_request_count}</Tag> : null}
-                  </div>
-                  <div style={{ color: '#8a8a8a', fontSize: 12 }}>{c.phone} · 销售：{c.sales_name || '-'}</div>
-                  {c.latest_pending_gift_note ? <div style={{ color: '#595959', fontSize: 12, marginTop: 2 }}>备注：{c.latest_pending_gift_note}</div> : null}
-                </button>
-              )
-            })}
+      <div style={{ marginTop: 16, background: '#fff', border: '1px solid #e8e8e3', borderRadius: 10, overflow: 'hidden' }}>
+        <div style={{ padding: 12, borderBottom: '1px solid #efefea', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div>
+            <div style={{ fontWeight: 700, fontSize: 16, lineHeight: 1.2 }}>待销课处理</div>
+            <div style={{ color: '#8a8a8a', fontSize: 12, marginTop: 4 }}>当前筛选共 {customers.length} 个客户</div>
           </div>
+          <Input.Search
+            allowClear
+            value={writeoffKeyword}
+            placeholder='搜索客户名/标签/备注'
+            style={{ width: 320 }}
+            onChange={(e) => setWriteoffKeyword(e.target.value)}
+            onSearch={(value) => setWriteoffKeyword(value)}
+          />
         </div>
-
-        <div style={{ border: '1px solid #e8e8e3', borderRadius: 10, background: '#fff', padding: 14 }}>
-          {selectedCustomer ? (
-            <>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+        <Table
+          size='small'
+          rowKey='customer_id'
+          dataSource={customers}
+          pagination={{ pageSize: 8 }}
+          columns={[
+            {
+              title: '客户',
+              width: 180,
+              render: (_: unknown, c: CustomerItem) => (
                 <div>
-                  <div style={{ fontWeight: 700, fontSize: 16 }}>{selectedCustomer.customer_name}</div>
-                  <div style={{ color: '#8a8a8a', fontSize: 12 }}>{selectedCustomer.phone} · 销售：{selectedCustomer.sales_name || '-'}</div>
+                  <div style={{ fontSize: 14, fontWeight: 700, lineHeight: 1.2 }}>{c.customer_name}</div>
+                  <div style={{ color: '#6b7280', marginTop: 4, fontSize: 12 }}>{c.phone}</div>
                 </div>
-                <Button type='primary' onClick={() => setWriteoffOpen(true)}>新增管理员销课</Button>
-              </div>
-
-              <div style={{ display: 'flex', gap: 12, marginBottom: 12 }}>
-                <div style={{ border: '1px solid #efefea', borderRadius: 8, padding: '8px 10px' }}>累计花费：{y2f(selectedCustomer.total_spent)}</div>
-                <div style={{ border: '1px solid #efefea', borderRadius: 8, padding: '8px 10px' }}>赠送学费：{y2f(selectedCustomer.gifted_tuition_amount)}</div>
-                <div style={{ border: '1px solid #bfdbfe', background: '#eff6ff', borderRadius: 8, padding: '8px 10px', color: '#1d4ed8' }}>学费结余：{y2f(selectedCustomer.tuition_balance)}</div>
-              </div>
-
-              <Table
-                rowKey='enrollment_id'
-                dataSource={selectedCustomer.courses}
-                pagination={false}
-                size='small'
-                columns={[
-                  { title: '课程', dataIndex: 'product_name' },
-                  { title: '金额', dataIndex: 'amount_paid', width: 100, render: (v: number) => y2f(v) },
-                  { title: '状态', dataIndex: 'status', width: 180 },
-                  { title: '时间', dataIndex: 'created_at', width: 140, render: (v: string) => new Date(v).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) },
-                ]}
-              />
-            </>
-          ) : (
-            <div style={{ color: '#8a8a8a' }}>暂无客户</div>
-          )}
-        </div>
+              ),
+            },
+            {
+              title: '标签',
+              width: 180,
+              render: (_: unknown, c: CustomerItem) => (
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                  {c.tags.length ? c.tags.map((t) => <Tag key={t.id} color={t.color}>{t.name}</Tag>) : <span style={{ color: '#9ca3af' }}>-</span>}
+                </div>
+              ),
+            },
+            {
+              title: '已购课程',
+              width: 360,
+              render: (_: unknown, c: CustomerItem) => (
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                  {c.courses.length ? c.courses.map((course) => (
+                    <span key={course.enrollment_id} style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                      {(() => {
+                        const meta = COURSE_STATUS_META[course.status as CourseStatusKey]
+                        return (
+                          <span
+                            style={{
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              border: `1px solid ${meta?.border || '#d9d9d9'}`,
+                              background: meta?.bg || '#f5f5f5',
+                              color: meta?.color || '#595959',
+                              borderRadius: 4,
+                              padding: '1px 6px',
+                              fontSize: 11,
+                              lineHeight: '16px',
+                              maxWidth: 180,
+                            }}
+                          >
+                            <span style={{ textDecoration: course.status.includes('refunded') ? 'line-through' : 'none', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                              {course.product_name}
+                            </span>
+                          </span>
+                        )
+                      })()}
+                      {course.status === 'admin_marked_completed' ? (
+                        <Tooltip title="退款">
+                          <button
+                            disabled={refundingId === course.enrollment_id}
+                            onClick={() => void refundCourse(c.customer_id, course.enrollment_id)}
+                            style={{
+                              border: 'none',
+                              background: 'none',
+                              cursor: refundingId === course.enrollment_id ? 'not-allowed' : 'pointer',
+                              color: '#1d4ed8',
+                              opacity: refundingId === course.enrollment_id ? 0.4 : 0.7,
+                              padding: 0,
+                              marginLeft: 2,
+                              fontSize: 11,
+                              lineHeight: '14px',
+                            }}
+                          >
+                            ×
+                          </button>
+                        </Tooltip>
+                      ) : null}
+                    </span>
+                  )) : <span style={{ color: '#9ca3af' }}>-</span>}
+                </div>
+              ),
+            },
+            { title: '学费结余', dataIndex: 'tuition_balance', width: 140, render: (v: number) => <span style={{ color: '#16a34a', fontWeight: 700, fontSize: 13 }}>{y2f(v)}</span> },
+            { title: '备注', dataIndex: 'sales_note', width: 200, render: (v: string | null) => v || '-' },
+            { title: '咨询次数', dataIndex: 'consult_count', width: 100, render: (v: number) => v ?? 0 },
+            { title: '绑定微信', dataIndex: 'wechat_name', width: 180, render: (v: string | null) => v || '-' },
+            {
+              title: '操作',
+              width: 130,
+              render: (_: unknown, c: CustomerItem) => (
+                <Button
+                  size='small'
+                  type='primary'
+                  onClick={() => {
+                    setSelectedCustomerId(c.customer_id)
+                    setWriteoffOpen(true)
+                  }}
+                >
+                  新增销课
+                </Button>
+              ),
+            },
+          ]}
+        />
       </div>
 
       <Modal
@@ -305,13 +406,14 @@ export default function AdminTuitionAndWriteoffPage() {
           await api.post(`/admin/customers/${selectedCustomer.customer_id}/writeoff-courses`, {
             product_id: writeoffForm.product_id,
             amount: Math.round(writeoffForm.amount_yuan * 100),
-            status: writeoffForm.status,
+            status: 'admin_marked_completed',
             note: writeoffForm.note || undefined,
           })
           message.success('管理员销课记录已新增')
           setWriteoffOpen(false)
-          setWriteoffForm({ product_id: '', amount_yuan: 0, status: 'admin_marked_completed', note: '' })
+          setWriteoffForm({ product_id: '', amount_yuan: 0, note: '' })
           await fetchCustomers()
+          await fetchSummary()
         }}
         onCancel={() => setWriteoffOpen(false)}
       >
@@ -332,14 +434,6 @@ export default function AdminTuitionAndWriteoffPage() {
             addonBefore='销课金额(元)'
             value={writeoffForm.amount_yuan}
             onChange={(v) => setWriteoffForm((prev) => ({ ...prev, amount_yuan: Number(v || 0) }))}
-          />
-          <Select
-            value={writeoffForm.status}
-            onChange={(v) => setWriteoffForm((prev) => ({ ...prev, status: v }))}
-            options={[
-              { value: 'admin_marked_completed', label: '管理员销课已上（扣结余）' },
-              { value: 'admin_marked_completed_refunded', label: '管理员销课+退款' },
-            ]}
           />
           <Input.TextArea
             rows={3}
