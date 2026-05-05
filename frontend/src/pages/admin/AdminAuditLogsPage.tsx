@@ -18,10 +18,11 @@ interface AuditLogList {
   items: AuditLogItem[]
 }
 
-const y2f = (cents: number) => `￥${(cents / 100).toLocaleString()}`
+const y2f = (yuan: number) => `¥${Number(yuan || 0).toLocaleString()}`
 const actionLabel: Record<string, string> = {
   admin_writeoff_course_created: '新增管理员销课',
   admin_writeoff_course_refunded: '管理员销课退款',
+  admin_writeoff_course_refund_reverted: '管理员销课撤销退款',
   gift_request_approved: '赠送学费通过',
   gift_request_rejected: '赠送学费驳回',
 }
@@ -51,10 +52,10 @@ export default function AdminAuditLogsPage() {
 
   return (
     <div>
-      <div className="page-header">
+      <div className='page-header'>
         <div>
           <h2>操作日志</h2>
-          <p className="page-subtitle">展示销课与充值相关审计行为，支持筛选与分页。</p>
+          <p className='page-subtitle'>展示销课与赠送学费相关审计行为，支持筛选与分页。</p>
         </div>
       </div>
 
@@ -66,6 +67,7 @@ export default function AdminAuditLogsPage() {
             { value: 'all', label: '全部类型' },
             { value: 'admin_writeoff_course_created', label: '新增管理员销课' },
             { value: 'admin_writeoff_course_refunded', label: '管理员销课退款' },
+            { value: 'admin_writeoff_course_refund_reverted', label: '管理员销课撤销退款' },
             { value: 'gift_request_approved', label: '赠送学费通过' },
             { value: 'gift_request_rejected', label: '赠送学费驳回' },
           ]}
@@ -102,7 +104,16 @@ export default function AdminAuditLogsPage() {
         columns={[
           { title: '动作', dataIndex: 'action', width: 170, render: (v: string) => <Tag color='blue'>{actionLabel[v] || v}</Tag> },
           { title: '操作人', dataIndex: 'operator_name', width: 130, render: (v: string | null) => v || '-' },
-          { title: '金额变动', dataIndex: 'amount_delta', width: 130, render: (v: number | null) => v === null ? '-' : <span style={{ color: v >= 0 ? '#16a34a' : '#dc2626', fontWeight: 700 }}>{v >= 0 ? '+' : ''}{y2f(v)}</span> },
+          {
+            title: '金额变动',
+            dataIndex: 'amount_delta',
+            width: 130,
+            render: (v: number | null) => v === null ? '-' : (
+              <span style={{ color: v >= 0 ? '#16a34a' : '#dc2626', fontWeight: 700 }}>
+                {v >= 0 ? '+' : ''}{y2f(v)}
+              </span>
+            ),
+          },
           { title: '客户', dataIndex: 'customer_name', width: 140, render: (v: string | null) => v || '-' },
           { title: '资源类型', dataIndex: 'resource_type', width: 150 },
           { title: '时间', dataIndex: 'created_at', width: 170, render: (v: string) => new Date(v).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) },
@@ -112,4 +123,3 @@ export default function AdminAuditLogsPage() {
     </div>
   )
 }
-
