@@ -117,7 +117,7 @@ export default function AdminAuditLogsPage() {
           { title: '客户', dataIndex: 'customer_name', width: 140, render: (v: string | null) => v || '-' },
           { title: '资源类型', dataIndex: 'resource_type', width: 150 },
           { title: '时间', dataIndex: 'created_at', width: 170, render: (v: string) => new Date(v).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) },
-          { title: '备注', dataIndex: 'note', width: 260, render: (v: string | null) => v || '-' },
+          { title: '备注', dataIndex: 'note', width: 260, render: (v: string | null) => v || '' },
         ]}
       />
     </div>
