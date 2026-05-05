@@ -8,6 +8,7 @@ const menuItems = [
 ]
 
 const contentWidth = 1280
+const brandLogo = '/login-logo.png'
 
 export default function SalesLayout() {
   const navigate = useNavigate()
@@ -19,10 +20,7 @@ export default function SalesLayout() {
       <header style={{ position: 'sticky', top: 0, zIndex: 100, background: '#FDFDF7', borderBottom: '1px solid #E8E8E3' }}>
         <div style={{ maxWidth: contentWidth, margin: '0 auto', padding: '0 24px', height: 56, display: 'flex', alignItems: 'center', gap: 24 }}>
           <div onClick={() => navigate('/sales/customers')} style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', flexShrink: 0 }}>
-            <svg width="22" height="22" viewBox="0 0 22 22" fill="none">
-              <rect width="22" height="22" rx="5" fill="#0E0E0E"/>
-              <path d="M6 16V7L11 12L16 7V16" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-            </svg>
+            <img src={brandLogo} alt='猫课CRM' style={{ width: 24, height: 24, borderRadius: 6, objectFit: 'cover' }} />
             <span style={{ fontWeight: 700, fontSize: 14, color: '#0E0E0E', letterSpacing: '-0.01em' }}>猫课 · 销售</span>
           </div>
 
