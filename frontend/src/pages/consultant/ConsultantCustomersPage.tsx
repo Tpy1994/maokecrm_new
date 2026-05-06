@@ -33,6 +33,8 @@ interface RowItem {
   tags: CTag[]
   products: CProduct[]
   note: string | null
+  sales_note: string | null
+  tuition_balance: number
   next_consultation: string | null
   next_consultation_status: string
   next_consultation_label: string
@@ -63,6 +65,7 @@ const toneBg: Record<string, string> = {
   muted: '#f7f7f7',
   normal: '#fff',
 }
+const y2f = (yuan: number) => `¥${Number(yuan || 0).toLocaleString()}`
 
 export default function ConsultantCustomersPage() {
   const navigate = useNavigate()
@@ -264,9 +267,9 @@ export default function ConsultantCustomersPage() {
       ),
     },
     {
-      title: '备注',
+      title: '咨询师备注',
       dataIndex: 'note',
-      width: 300,
+      width: 240,
       render: (v: string | null, r: RowItem) => {
         const isEditing = editingNoteCustomerId === r.customer_id
         const isSaving = savingNoteCustomerId === r.customer_id
@@ -325,6 +328,23 @@ export default function ConsultantCustomersPage() {
           </div>
         )
       },
+    },
+    {
+      title: '销售备注',
+      dataIndex: 'sales_note',
+      width: 220,
+      render: (v: string | null) => (
+        <div style={{ color: '#595959', minHeight: 30, padding: '4px 8px' }}>
+          {v || <span style={{ color: '#bfbfbf' }}>暂无销售备注</span>}
+        </div>
+      ),
+    },
+    {
+      title: '剩余学费',
+      dataIndex: 'tuition_balance',
+      width: 120,
+      align: 'right' as const,
+      render: (v: number) => <span style={{ color: '#166534', fontWeight: 700 }}>{y2f(v)}</span>,
     },
     {
       title: '下次咨询',

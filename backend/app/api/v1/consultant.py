@@ -1,5 +1,6 @@
 ﻿import json
 from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
@@ -13,7 +14,7 @@ from app.models.consultation_log import ConsultationLog
 from app.models.customer import Customer
 from app.models.customer_course_enrollment import CustomerCourseEnrollment
 from app.models.link_account import LinkAccount
-from app.models.order import CustomerProduct
+from app.models.order import CustomerProduct, Order
 from app.models.product import Product
 from app.models.tag import CustomerTag, Tag, TagCategory
 from app.models.user import User
@@ -45,9 +46,12 @@ class ConsultantCustomerOut(BaseModel):
     customer_id: str
     customer_name: str
     customer_info: str
+    client_wechat_name: str | None
     tags: list[TagOut]
     products: list[ProductOut]
     note: str | None
+    sales_note: str | None
+    tuition_balance: float
     next_consultation: str | None
     next_consultation_status: str
     next_consultation_label: str
@@ -63,7 +67,8 @@ class PoolItemOut(BaseModel):
     pool_id: str
     customer_id: str
     customer_name: str
-    phone: str
+    phone: str | None
+    client_wechat_name: str | None
     wechat_name: str | None
     source_channel: str | None
     deal_product: str | None
@@ -100,7 +105,8 @@ class LogDetailOut(LogItemOut):
 class ConsultantCustomerDetailOut(BaseModel):
     customer_id: str
     customer_name: str
-    phone: str
+    phone: str | None
+    client_wechat_name: str | None
     customer_info: str
     sales_name: str | None
     wechat_name: str | None
@@ -333,6 +339,12 @@ async def consultant_customers(
             select(func.count(ConsultationLog.id)).where(ConsultationLog.customer_id == c.id)
         )
         consultation_count = int(consultation_count_r.scalar() or 0)
+        total_spent_r = await db.execute(
+            select(func.coalesce(func.sum(Order.amount - Order.refund_total), 0)).where(Order.customer_id == c.id)
+        )
+        total_spent = Decimal(total_spent_r.scalar() or 0)
+        gifted = Decimal(c.gifted_tuition_amount or 0)
+        tuition_balance = max(Decimal('0'), gifted - total_spent)
 
         status_key, status_label, row_tone = _dt_status(rel.next_consultation)
         period_state, period_key = _period_status(rel.start_date, rel.end_date)
@@ -349,9 +361,12 @@ async def consultant_customers(
                 customer_id=c.id,
                 customer_name=c.name,
                 customer_info=_customer_info(c),
+                client_wechat_name=c.client_wechat_name,
                 tags=tags,
                 products=products,
                 note=rel.note,
+                sales_note=c.sales_note,
+                tuition_balance=float(tuition_balance),
                 next_consultation=rel.next_consultation.isoformat() if rel.next_consultation else None,
                 next_consultation_status=status_key,
                 next_consultation_label=status_label,
@@ -551,6 +566,7 @@ async def consultant_pool(
                 customer_id=c.id,
                 customer_name=c.name,
                 phone=c.phone,
+                client_wechat_name=c.client_wechat_name,
                 wechat_name=wechat_name,
                 source_channel=source_channel,
                 deal_product=deal_product,
@@ -798,6 +814,7 @@ async def customer_detail(
         customer_id=customer.id,
         customer_name=customer.name,
         phone=customer.phone,
+        client_wechat_name=customer.client_wechat_name,
         customer_info=_customer_info(customer),
         sales_name=sales_name,
         wechat_name=wechat_name,
