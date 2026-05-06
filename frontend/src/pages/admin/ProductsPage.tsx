@@ -15,8 +15,7 @@ interface Product {
 
 const y2f = (yuan: number) => {
   const value = Number(yuan || 0)
-  if (value >= 10000) return `${(value / 10000).toFixed(1)} 万`
-  return value.toLocaleString()
+  return `¥${value.toLocaleString('zh-CN', { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`
 }
 
 const badgeStyle = {
@@ -112,7 +111,7 @@ export default function ProductsPage() {
       title: '价格',
       dataIndex: 'price',
       width: 120,
-      render: (v: number) => <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: 14 }}>¥{y2f(v)}</span>,
+      render: (v: number) => <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: 14 }}>{y2f(v)}</span>,
     },
     {
       title: '咨询类',
