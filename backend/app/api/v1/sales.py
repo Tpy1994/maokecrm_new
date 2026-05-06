@@ -1,9 +1,10 @@
+import re
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from sqlalchemy import text
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlmodel import select, func, and_
+from sqlmodel import select, func, and_, or_
 from sqlmodel import SQLModel
 from pydantic import BaseModel, Field
 
@@ -56,10 +57,11 @@ class CourseEnrollmentOut(BaseModel):
 class CustomerOut(BaseModel):
     id: str
     name: str
-    phone: str
+    phone: str | None
     industry: str | None
     region: str | None
     added_date: str
+    client_wechat_name: str | None
     other_contact: str | None
     link_account_id: str
     link_account_name: str | None
@@ -78,7 +80,8 @@ class CustomerOut(BaseModel):
 
 class CustomerCreate(BaseModel):
     name: str = Field(max_length=50)
-    phone: str = Field(max_length=20)
+    phone: str | None = Field(default=None, max_length=20)
+    client_wechat_name: str = Field(max_length=100)
     industry: str | None = None
     region: str | None = None
     added_date: str | None = None
@@ -88,6 +91,7 @@ class CustomerCreate(BaseModel):
 class CustomerUpdate(BaseModel):
     name: str | None = None
     phone: str | None = None
+    client_wechat_name: str | None = Field(default=None, max_length=100)
     industry: str | None = None
     region: str | None = None
     added_date: str | None = None
@@ -96,6 +100,29 @@ class CustomerUpdate(BaseModel):
     next_follow_up: str | None = None
     consultation_count: int | None = None
     gifted_tuition_amount: float | None = None
+
+
+class CustomerDuplicateCheckIn(BaseModel):
+    phone: str | None = None
+    client_wechat_name: str | None = None
+    exclude_customer_id: str | None = None
+
+
+class CustomerDuplicateMatchOut(BaseModel):
+    customer_id: str
+    customer_name: str
+    phone: str | None
+    client_wechat_name: str | None
+    owner_id: str
+    owner_name: str | None
+    link_account_name: str | None
+    consultant_names: list[str]
+    matched_fields: list[str]
+
+
+class CustomerDuplicateCheckOut(BaseModel):
+    exists: bool
+    matches: list[CustomerDuplicateMatchOut]
 
 class PurchaseRequest(BaseModel):
     product_id: str
@@ -192,10 +219,122 @@ async def _ensure_customer_added_date_schema() -> None:
     async with engine.begin() as conn:
         import app.models  # noqa: F401
         await conn.run_sync(SQLModel.metadata.create_all)
+        await conn.execute(text("ALTER TABLE customers ADD COLUMN IF NOT EXISTS client_wechat_name VARCHAR(100)"))
         await conn.execute(text("ALTER TABLE customers ADD COLUMN IF NOT EXISTS added_date DATE"))
         await conn.execute(text("ALTER TABLE customers ADD COLUMN IF NOT EXISTS other_contact VARCHAR(200)"))
+        await conn.execute(text("ALTER TABLE customers ALTER COLUMN phone DROP NOT NULL"))
         await conn.execute(text("UPDATE customers SET added_date = CURRENT_DATE WHERE added_date IS NULL"))
         await conn.execute(text("ALTER TABLE customers ALTER COLUMN added_date SET DEFAULT CURRENT_DATE"))
+
+
+def _clean_optional_text(value: str | None) -> str | None:
+    if value is None:
+        return None
+    cleaned = value.strip()
+    return cleaned or None
+
+
+def _require_text(value: str, field_name: str) -> str:
+    cleaned = value.strip()
+    if not cleaned:
+        raise HTTPException(400, f"{field_name} is required")
+    return cleaned
+
+
+def _normalize_wechat(value: str | None) -> str | None:
+    cleaned = _clean_optional_text(value)
+    return cleaned.lower() if cleaned else None
+
+
+def _normalize_phone(value: str | None) -> str | None:
+    cleaned = _clean_optional_text(value)
+    if not cleaned:
+        return None
+    compact = re.sub(r"[\s\-()]+", "", cleaned)
+    if compact.startswith("+86"):
+        compact = compact[3:]
+    elif compact.startswith("86") and len(compact) > 11:
+        compact = compact[2:]
+    return compact
+
+
+async def _find_duplicate_customers(
+    *,
+    db: AsyncSession,
+    phone: str | None,
+    client_wechat_name: str | None,
+    exclude_customer_id: str | None = None,
+) -> list[CustomerDuplicateMatchOut]:
+    normalized_phone = _normalize_phone(phone)
+    normalized_wechat = _normalize_wechat(client_wechat_name)
+    if not normalized_phone and not normalized_wechat:
+        return []
+
+    conditions = []
+    if normalized_phone:
+        phone_expr = func.regexp_replace(
+            func.regexp_replace(
+                func.regexp_replace(func.coalesce(Customer.phone, ""), r"[\s\-()]+", "", "g"),
+                "^0086",
+                "",
+                "g",
+            ),
+            "^86",
+            "",
+            "g",
+        )
+        conditions.append(phone_expr == normalized_phone)
+    if normalized_wechat:
+        conditions.append(func.lower(func.trim(Customer.client_wechat_name)) == normalized_wechat)
+
+    query = select(Customer).where(or_(*conditions))
+    if exclude_customer_id:
+        query = query.where(Customer.id != exclude_customer_id)
+
+    rows = await db.execute(query)
+    matches: list[CustomerDuplicateMatchOut] = []
+    for customer in rows.scalars().all():
+        hit_fields: list[str] = []
+        if normalized_phone and _normalize_phone(customer.phone) == normalized_phone:
+            hit_fields.append("phone")
+        if normalized_wechat and _normalize_wechat(customer.client_wechat_name) == normalized_wechat:
+            hit_fields.append("client_wechat_name")
+        if not hit_fields:
+            continue
+
+        la_r = await db.execute(select(LinkAccount).where(LinkAccount.id == customer.link_account_id))
+        link_account = la_r.scalar_one_or_none()
+        owner_id = link_account.owner_id if link_account else ""
+        owner_name = None
+        if owner_id:
+            owner_r = await db.execute(select(User.name).where(User.id == owner_id))
+            owner_name = owner_r.scalar_one_or_none()
+        consultant_rows = await db.execute(
+            select(User.name)
+            .join(ConsultantCustomer, ConsultantCustomer.consultant_id == User.id)
+            .where(
+                ConsultantCustomer.customer_id == customer.id,
+                ConsultantCustomer.status.in_(["active", "pending"]),
+                User.role == "consultant",
+            )
+            .order_by(User.name)
+        )
+        consultant_names = [name for (name,) in consultant_rows.all()]
+
+        matches.append(
+            CustomerDuplicateMatchOut(
+                customer_id=customer.id,
+                customer_name=customer.name,
+                phone=customer.phone,
+                client_wechat_name=customer.client_wechat_name,
+                owner_id=owner_id,
+                owner_name=owner_name,
+                link_account_name=link_account.account_id if link_account else None,
+                consultant_names=consultant_names,
+                matched_fields=hit_fields,
+            )
+        )
+    return matches
 
 
 async def _build_customer_out(customer: Customer, db: AsyncSession) -> CustomerOut:
@@ -285,6 +424,7 @@ async def _build_customer_out(customer: Customer, db: AsyncSession) -> CustomerO
     return CustomerOut(
         id=customer.id, name=customer.name, phone=customer.phone,
         industry=customer.industry, region=customer.region, added_date=customer.added_date.isoformat(),
+        client_wechat_name=customer.client_wechat_name,
         other_contact=customer.other_contact,
         link_account_id=customer.link_account_id, link_account_name=la_name,
         tags=tags, products=products,
@@ -495,9 +635,10 @@ async def list_customers(
             k = keyword.strip().lower()
             if k:
                 in_name = k in item.name.lower()
-                in_phone = k in item.phone.lower()
+                in_phone = k in (item.phone or "").lower()
+                in_client_wechat = k in (item.client_wechat_name or "").lower()
                 in_tags = any(k in t.name.lower() for t in item.tags)
-                if not (in_name or in_phone or in_tags):
+                if not (in_name or in_phone or in_client_wechat or in_tags):
                     continue
         if in_pool is not None and item.in_consultation_pool != in_pool:
             continue
@@ -527,6 +668,14 @@ async def create_customer(
     if not la_result.scalar_one_or_none():
         raise HTTPException(400, "该账号不属于你")
 
+    duplicates = await _find_duplicate_customers(
+        db=db,
+        phone=body.phone,
+        client_wechat_name=body.client_wechat_name,
+    )
+    if duplicates:
+        raise HTTPException(409, "客户微信号或手机号已存在")
+
     added_date = date.today()
     if body.added_date:
         try:
@@ -535,11 +684,15 @@ async def create_customer(
             raise HTTPException(400, "added_date must be YYYY-MM-DD") from e
 
     customer = Customer(
-        name=body.name, phone=body.phone,
-        industry=body.industry, region=body.region,
+        name=_require_text(body.name, "name"),
+        phone=_clean_optional_text(body.phone),
+        client_wechat_name=_require_text(body.client_wechat_name, "client_wechat_name"),
+        industry=body.industry,
+        region=body.region,
         added_date=added_date,
         other_contact=body.other_contact.strip() if body.other_contact else None,
-        link_account_id=body.link_account_id, entry_user_id=current_user.id,
+        link_account_id=body.link_account_id,
+        entry_user_id=current_user.id,
     )
     db.add(customer)
     await db.flush()
@@ -548,6 +701,22 @@ async def create_customer(
     await db.commit()
     await db.refresh(customer)
     return await _build_customer_out(customer, db)
+
+
+@router.post("/customers/check-duplicate", response_model=CustomerDuplicateCheckOut)
+async def check_customer_duplicate(
+    body: CustomerDuplicateCheckIn,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(require_role("sales")),
+):
+    await _ensure_customer_added_date_schema()
+    matches = await _find_duplicate_customers(
+        db=db,
+        phone=body.phone,
+        client_wechat_name=body.client_wechat_name,
+        exclude_customer_id=body.exclude_customer_id,
+    )
+    return CustomerDuplicateCheckOut(exists=bool(matches), matches=matches)
 
 
 @router.put("/customers/{customer_id}", response_model=CustomerOut)
@@ -560,8 +729,20 @@ async def update_customer(
     await _ensure_customer_added_date_schema()
     customer = await _get_my_customer(customer_id, current_user, db)
 
+    if body.phone is not None or body.client_wechat_name is not None:
+        duplicates = await _find_duplicate_customers(
+            db=db,
+            phone=customer.phone if body.phone is None else body.phone,
+            client_wechat_name=customer.client_wechat_name if body.client_wechat_name is None else body.client_wechat_name,
+            exclude_customer_id=customer.id,
+        )
+        if duplicates:
+            raise HTTPException(409, "客户微信号或手机号已存在")
+
     if body.name is not None: customer.name = body.name
-    if body.phone is not None: customer.phone = body.phone
+    if body.phone is not None: customer.phone = _clean_optional_text(body.phone)
+    if body.client_wechat_name is not None:
+        customer.client_wechat_name = _clean_optional_text(body.client_wechat_name)
     if body.industry is not None: customer.industry = body.industry
     if body.region is not None: customer.region = body.region
     if body.other_contact is not None:

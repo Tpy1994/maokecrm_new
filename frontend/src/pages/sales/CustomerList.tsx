@@ -12,7 +12,8 @@ interface CourseItem { enrollment_id: string; product_id: string; product_name: 
 interface Customer {
   id: string
   name: string
-  phone: string
+  phone: string | null
+  client_wechat_name: string | null
   industry: string | null
   region: string | null
   added_date: string
@@ -41,6 +42,23 @@ interface TuitionGiftRequestItem {
   status: 'pending' | 'approved' | 'rejected'
   reviewed_at: string | null
   created_at: string
+}
+
+interface DuplicateMatch {
+  customer_id: string
+  customer_name: string
+  phone: string | null
+  client_wechat_name: string | null
+  owner_id: string
+  owner_name: string | null
+  link_account_name: string | null
+  consultant_names: string[]
+  matched_fields: string[]
+}
+
+interface DuplicateCheckResult {
+  exists: boolean
+  matches: DuplicateMatch[]
 }
 
 
@@ -118,6 +136,8 @@ export default function CustomerList() {
   const [giftHistoryOpen, setGiftHistoryOpen] = useState(false)
   const [giftHistoryLoading, setGiftHistoryLoading] = useState(false)
   const [giftHistory, setGiftHistory] = useState<TuitionGiftRequestItem[]>([])
+  const [duplicateOpen, setDuplicateOpen] = useState(false)
+  const [duplicateMatches, setDuplicateMatches] = useState<DuplicateMatch[]>([])
 
   const fetchLinkAccounts = useCallback(async () => {
     setLinkAccounts(await api.get<LinkAccount[]>('/sales/link-accounts'))
@@ -157,15 +177,26 @@ export default function CustomerList() {
     const v = await createCustomerForm.validateFields()
     setCreateCustomerSubmitting(true)
     try {
-      await api.post('/sales/customers', {
+      const payload = {
         name: v.name,
-        phone: v.phone,
+        phone: v.phone || undefined,
+        client_wechat_name: v.client_wechat_name,
         industry: v.industry || undefined,
         region: v.region || undefined,
         link_account_id: v.link_account_id,
         added_date: (v.added_date || dayjs()).format('YYYY-MM-DD'),
         other_contact: v.other_contact || undefined,
+      }
+      const check = await api.post<DuplicateCheckResult>('/sales/customers/check-duplicate', {
+        phone: payload.phone,
+        client_wechat_name: payload.client_wechat_name,
       })
+      if (check.exists) {
+        setDuplicateMatches(check.matches)
+        setDuplicateOpen(true)
+        return
+      }
+      await api.post('/sales/customers', payload)
       message.success('客户已创建')
       setCreateCustomerOpen(false)
       createCustomerForm.resetFields()
@@ -313,7 +344,19 @@ export default function CustomerList() {
   }, [activeCourseKey, editingRefundCourse, editingAmountCourse])
 
   const columns = [
-    { title: '客户', width: 130, render: (_: unknown, r: Customer) => <div><div style={{ fontWeight: 700, fontSize: 13, lineHeight: 1.2 }}>{r.name}</div><div style={{ fontSize: 11, color: '#8c8c8c', lineHeight: 1.2, marginTop: 2 }}>{r.phone}</div></div> },
+    {
+      title: '客户',
+      width: 150,
+      render: (_: unknown, r: Customer) => (
+        <div>
+          <div style={{ fontWeight: 700, fontSize: 13, lineHeight: 1.2 }}>{r.name}</div>
+          <div style={{ fontSize: 11, color: '#8c8c8c', lineHeight: 1.2, marginTop: 2 }}>
+            微信：{r.client_wechat_name || '-'}
+          </div>
+          {r.phone ? <div style={{ fontSize: 11, color: '#b0b0b0', lineHeight: 1.2, marginTop: 2 }}>手机：{r.phone}</div> : null}
+        </div>
+      ),
+    },
     {
       title: '标签', width: 130,
       render: (_: unknown, r: Customer) => (
@@ -622,6 +665,43 @@ export default function CustomerList() {
       </Modal>
 
       <Modal
+        title='发现重复客户'
+        open={duplicateOpen}
+        footer={null}
+        onCancel={() => setDuplicateOpen(false)}
+      >
+        <div style={{ color: '#8c8c8c', marginBottom: 12 }}>客户微信号或手机号已存在，请先确认现有客户的归属销售和跟进顾问。</div>
+        <div style={{ display: 'grid', gap: 10 }}>
+          {duplicateMatches.map((item) => (
+            <div key={item.customer_id} style={{ border: '1px solid #f0d9a6', background: '#fffaf0', borderRadius: 10, padding: 12 }}>
+              <div style={{ fontWeight: 700 }}>{item.customer_name}</div>
+              <div style={{ marginTop: 4, color: '#595959', fontSize: 12 }}>
+                归属销售：{item.owner_name || '-'} · 绑定微信：{item.link_account_name || '-'}
+              </div>
+              <div style={{ marginTop: 4, color: '#595959', fontSize: 12 }}>
+                跟进顾问：{item.consultant_names.length ? item.consultant_names.join('、') : '暂无'}
+              </div>
+              <div style={{ marginTop: 4, color: '#8c8c8c', fontSize: 12 }}>
+                命中字段：{item.matched_fields.join('、')}
+              </div>
+              <div style={{ marginTop: 10, display: 'flex', justifyContent: 'flex-end' }}>
+                <Button
+                  type='primary'
+                  onClick={() => {
+                    setDuplicateOpen(false)
+                    setCreateCustomerOpen(false)
+                    navigate(`/sales/customers/${item.customer_id}/logs`)
+                  }}
+                >
+                  打开现有客户
+                </Button>
+              </div>
+            </div>
+          ))}
+        </div>
+      </Modal>
+
+      <Modal
         title='新建客户'
         open={createCustomerOpen}
         width={620}
@@ -636,11 +716,14 @@ export default function CustomerList() {
               <Form.Item name='name' label='客户姓名' rules={[{ required: true, message: '请输入客户姓名' }]}>
                 <Input maxLength={50} placeholder='例如：张三' />
               </Form.Item>
-              <Form.Item name='phone' label='手机号' rules={[{ required: true, message: '请输入手机号' }]}>
+              <Form.Item name='phone' label='手机号（选填）'>
                 <Input maxLength={20} placeholder='例如：13800000000' />
               </Form.Item>
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+              <Form.Item name='client_wechat_name' label='客户微信号' rules={[{ required: true, message: '请输入客户微信号' }]}>
+                <Input maxLength={100} placeholder='例如：zhangsan_01' />
+              </Form.Item>
               <Form.Item name='industry' label='行业'>
                 <Input maxLength={50} placeholder='选填' />
               </Form.Item>
@@ -666,6 +749,43 @@ export default function CustomerList() {
               <Input maxLength={200} placeholder='例如：微信 zhangsan_01 / QQ 123456' />
             </Form.Item>
           </Form>
+        </div>
+      </Modal>
+
+      <Modal
+        title='发现重复客户'
+        open={duplicateOpen}
+        footer={null}
+        onCancel={() => setDuplicateOpen(false)}
+      >
+        <div style={{ color: '#8c8c8c', marginBottom: 12 }}>客户微信号或手机号已存在，请先确认现有客户的归属销售和跟进顾问。</div>
+        <div style={{ display: 'grid', gap: 10 }}>
+          {duplicateMatches.map((item) => (
+            <div key={item.customer_id} style={{ border: '1px solid #f0d9a6', background: '#fffaf0', borderRadius: 10, padding: 12 }}>
+              <div style={{ fontWeight: 700 }}>{item.customer_name}</div>
+              <div style={{ marginTop: 4, color: '#595959', fontSize: 12 }}>
+                归属销售：{item.owner_name || '-'} · 绑定微信：{item.link_account_name || '-'}
+              </div>
+              <div style={{ marginTop: 4, color: '#595959', fontSize: 12 }}>
+                跟进顾问：{item.consultant_names.length ? item.consultant_names.join('、') : '暂无'}
+              </div>
+              <div style={{ marginTop: 4, color: '#8c8c8c', fontSize: 12 }}>
+                命中字段：{item.matched_fields.join('、')}
+              </div>
+              <div style={{ marginTop: 10, display: 'flex', justifyContent: 'flex-end' }}>
+                <Button
+                  type='primary'
+                  onClick={() => {
+                    setDuplicateOpen(false)
+                    setCreateCustomerOpen(false)
+                    navigate(`/sales/customers/${item.customer_id}/logs`)
+                  }}
+                >
+                  打开现有客户
+                </Button>
+              </div>
+            </div>
+          ))}
         </div>
       </Modal>
 
@@ -712,7 +832,7 @@ export default function CustomerList() {
         <Form form={giftRequestForm} layout='vertical'>
           <Form.Item name='customer_id' label='客户' rules={[{ required: true, message: '请选择客户' }]}>
             <Select showSearch optionFilterProp='label' placeholder='选择客户'>
-              {customers.map((c) => <Select.Option key={c.id} value={c.id} label={`${c.name} ${c.phone}`}>{c.name} {c.phone}</Select.Option>)}
+              {customers.map((c) => <Select.Option key={c.id} value={c.id} label={`${c.name} ${c.phone || c.client_wechat_name || ''}`}>{c.name} {c.phone || c.client_wechat_name || '-'}</Select.Option>)}
             </Select>
           </Form.Item>
           <Form.Item name='amount_yuan' label='赠送学费(元)' rules={[{ required: true, message: '请输入金额' }, { type: 'number', min: 0.01, message: '金额必须大于0' }]}>
