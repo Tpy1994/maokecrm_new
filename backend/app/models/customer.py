@@ -12,7 +12,8 @@ class Customer(SQLModel, table=True):
 
     id: str = Field(default_factory=new_uuid, primary_key=True, max_length=36)
     name: str = Field(max_length=50)
-    phone: str = Field(max_length=20)
+    phone: str | None = Field(default=None, max_length=20)
+    client_wechat_name: str | None = Field(default=None, max_length=100)
     industry: str | None = Field(default=None, max_length=50)
     region: str | None = Field(default=None, max_length=50)
     link_account_id: str = Field(foreign_key="link_accounts.id", max_length=36)
